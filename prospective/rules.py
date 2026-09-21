@@ -11,6 +11,7 @@ their orientation (`S` is K x V, and `alpha` is folded into `p = alpha Norm(k)`)
 
 Each arm changes exactly ONE of these lines:
 
+    gated               line 3: mu_t := 0, i.e. no momentum carry at all
     tss / generalized   line 3: eta_t R_t  ->  eta_t y_t, y the filter state
     qhm                 line 4: S_t = alpha_t S_(t-1)
                                       - beta_t [nu M_t + (1-nu) eta_t R_t]
@@ -25,8 +26,13 @@ import torch
 
 from .coefficients import H_TOKEN, prospective_coefficients
 
-ARMS = ("native", "tss", "generalized", "qhm", "nesterov")
+ARMS = ("gated", "native", "tss", "generalized", "qhm", "nesterov")
 FILTER_ARMS = ("tss", "generalized")
+#: Gated DeltaNet is this same rule with the momentum carry switched off. The
+#: official `naive.py` says so itself: "For GatedDeltaNet: p = alpha * Norm(k),
+#: mu = 0". It is an ARCHITECTURE baseline, not a write-rule variant, and it
+#: carries no extra parameters.
+NO_MOMENTUM_ARMS = ("gated",)
 
 
 def recurrent_ref(arm, q, k, v, log_alpha, log_mu, p, beta, eta, scale=None,
@@ -40,6 +46,8 @@ def recurrent_ref(arm, q, k, v, log_alpha, log_mu, p, beta, eta, scale=None,
         for x in (q, k, v, p, log_alpha, log_mu, beta, eta))
     B, T, H, DK = k.shape
     DV = v.shape[-1]
+    if arm in NO_MOMENTUM_ARMS:
+        log_mu = torch.full_like(log_mu, float("-inf"))
     if scale is None:
         scale = 1 / (q.shape[-1] ** 0.5)
     q = q * scale

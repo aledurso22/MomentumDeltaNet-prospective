@@ -102,3 +102,30 @@ def test_gradients_flow_to_every_new_leaf():
     recurrent_ref("generalized", mass=m, gamma=g, response=t, **d)[0].sum().backward()
     for leaf in (m, g, t):
         assert leaf.grad is not None and leaf.grad.abs().max() > 0
+
+
+def test_gated_is_the_momentum_rule_with_the_carry_off():
+    """Gated DeltaNet is arm `gated`: the same path with mu = 0. It must equal
+    the official native reference evaluated at mu = 0, bitwise."""
+    d = inputs(7)
+    got = recurrent_ref("gated", **d)[0]
+    d_off = dict(d, log_mu=torch.full_like(d["log_mu"], float("-inf")))
+    assert _dev(got, native(d_off)) == 0.0
+
+
+def test_gated_differs_from_native_when_momentum_is_on():
+    d = inputs(8)
+    assert _dev(recurrent_ref("gated", **d)[0], native(d)) > 1e-3
+
+
+def test_every_arm_runs_and_all_six_are_present():
+    from prospective.rules import ARMS
+    assert len(ARMS) == 6
+    d = inputs(9)
+    z = torch.zeros(H, dtype=d["v"].dtype)
+    extra = {"tss": dict(mass=z, gamma=z, response=z + 2.0),
+             "generalized": dict(mass=z + 0.7, gamma=z + 0.3, response=z + 1.5),
+             "qhm": dict(nu=torch.tensor(0.6, dtype=d["v"].dtype))}
+    for arm in ARMS:
+        o, _ = recurrent_ref(arm, **extra.get(arm, {}), **d)
+        assert torch.isfinite(o).all(), arm
