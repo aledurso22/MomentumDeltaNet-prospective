@@ -5,12 +5,16 @@ revision +7.53 pp, retention -0.39, recall -0.37 -- so a probe that only tests
 retrieval will miss it. Each sequence writes key-value pairs, REWRITES some of
 them, then queries. Queries are scored in three groups:
 
-    revised    -- the key was overwritten; the LATEST value is correct
-    untouched  -- the key was written once and never touched again
-    overall    -- both
+    overall            -- all queries            (the study's `recall`)
+    revised            -- the key was overwritten (the study's `revision`)
+    untouched          -- written once, never touched  (its `retention`)
+    immediate_revised  -- revised, rewrite <= IMMEDIATE_GAP tokens back
+    later_revised      -- revised, rewrite further back
 
-`immediate` marks a revised query whose rewrite is within IMMEDIATE_GAP tokens,
-which is where the effect was largest.
+These are the five metrics of the six-arm ladder, so the bridge lines up
+row-for-row against it. The effect there was +7.53 on immediate_revised and
++2.67 on later_revised, against -0.39 retention and -0.37 recall, which is why
+a retrieval-only endpoint would have missed it.
 """
 
 import torch
@@ -81,4 +85,5 @@ def accuracy(logits, batch):
         return 100.0 * (hit & mask).sum().item() / n if n else float("nan")
     return dict(overall=pct(scored), revised=pct(scored & (g == 1)),
                 untouched=pct(scored & (g == 2)),
-                immediate_revised=pct(scored & (g == 1) & imm))
+                immediate_revised=pct(scored & (g == 1) & imm),
+                later_revised=pct(scored & (g == 1) & ~imm))
