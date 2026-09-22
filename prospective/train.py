@@ -97,6 +97,17 @@ def run(args):
             line = "  ".join(f"{a}:{curves[a][-1]['immediate_revised']:5.1f}"
                              for a in arms)
             print(f"[{step:5d}] {time.time()-t0:7.1f}s  imm_rev  {line}", flush=True)
+            # the leaves, so a short probe shows whether they are moving at all
+            for a in arms:
+                leaves = {n.split(".")[-1]: p.detach()
+                          for n, p in models[a].named_parameters()
+                          if n.split(".")[-1] in ("fil_M", "fil_gamma",
+                                                  "fil_T", "nu")}
+                if leaves:
+                    txt = "  ".join(
+                        f"{n}={v.min().item():.3f}..{v.max().item():.3f}"
+                        for n, v in sorted(leaves.items()))
+                    print(f"        {a:>12}  {txt}", flush=True)
 
     out = dict(
         provenance=dict(repo_sha=git_sha(os.path.dirname(os.path.dirname(

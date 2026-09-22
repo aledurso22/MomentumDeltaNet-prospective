@@ -4,7 +4,8 @@
 #   EXPECTED_COMMIT=<sha> CUDA_VISIBLE_DEVICES=0 ./prospective/run_seed.sh 501
 set -euo pipefail
 
-SEED="${1:?usage: run_seed.sh <seed>}"
+SEED="${1:?usage: run_seed.sh <seed> [extra train.py flags...]}"
+shift
 OUT_ROOT="${OUT_ROOT:-$HOME/mdn-bridge}"
 STEPS="${STEPS:-4000}"
 
@@ -29,6 +30,7 @@ echo "gpus   : ${CUDA_VISIBLE_DEVICES:-all}"
 echo "out    : $RUN_DIR"
 nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader || true
 
+echo "extra   : $*"
 python -u -m prospective.train \
   --seed "$SEED" --steps "$STEPS" \
-  --out "$RUN_DIR/results.json" 2>&1 | tee "$RUN_DIR/train.log"
+  --out "$RUN_DIR/results.json" "$@" 2>&1 | tee "$RUN_DIR/train.log"
