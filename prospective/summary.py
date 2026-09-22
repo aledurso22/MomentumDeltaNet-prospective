@@ -12,8 +12,8 @@ import math
 
 METRICS = ("overall", "revised", "untouched", "immediate_revised",
            "later_revised")
-NATIVE_START = {"raw_nu": "nu=1 (sigmoid 8.0)", "raw_T": "T=h",
-                "raw_M": "M~0", "raw_g": "gamma~0"}
+NATIVE_START = {"nu": "nu=1", "fil_T": "T=h", "fil_M": "M=0.025 gen / 0 tss",
+                "fil_gamma": "gamma=1.0 gen / 0 tss"}
 
 
 def softplus(x):
@@ -71,10 +71,7 @@ def main():
             flat = vals if isinstance(vals, list) else [vals]
             flat = [v for sub in flat for v in
                     (sub if isinstance(sub, list) else [sub])]
-            if leaf == "raw_nu":
-                shown = [1 / (1 + math.exp(-v)) for v in flat]
-            else:
-                shown = [softplus(v) for v in flat]
+            shown = flat            # stored directly, no transform
             lo, hi = min(shown), max(shown)
             parts.append(f"{name}={lo:.4f}..{hi:.4f}")
         print(f"  {arm:>{w}}  " + "  ".join(parts))

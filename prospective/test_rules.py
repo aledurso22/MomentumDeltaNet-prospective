@@ -129,3 +129,60 @@ def test_every_arm_runs_and_all_six_are_present():
     for arm in ARMS:
         o, _ = recurrent_ref(arm, **extra.get(arm, {}), **d)
         assert torch.isfinite(o).all(), arm
+
+
+def test_leaves_actually_move_under_optimization():
+    """The regression that cost seed 501: with M = softplus(raw) started at the
+    native boundary, d(softplus)/d(raw) ~ 1e-4 froze M and gamma in place and
+    the generalized arm ran as TSS for 4000 steps. Stored directly, they move."""
+    import importlib
+    model_mod = importlib.import_module("prospective.model")
+    m = model_mod.build("generalized", vocab=40, seed=0, d_model=32,
+                        n_heads=2, n_layers=1)
+    mix = m.blocks[0].mix
+    before = (mix.fil_M.detach().clone(), mix.fil_gamma.detach().clone())
+    opt = torch.optim.AdamW(m.parameters(), lr=3e-3)
+    x = torch.randint(0, 40, (4, 24))
+    tgt = torch.randint(0, 40, (4, 24))
+    for _ in range(25):
+        loss = torch.nn.functional.cross_entropy(
+            m(x).reshape(-1, 40), tgt.reshape(-1))
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        m.project_()
+    moved_M = (mix.fil_M - before[0]).abs().max().item()
+    moved_g = (mix.fil_gamma - before[1]).abs().max().item()
+    assert moved_M > 1e-3, moved_M
+    assert moved_g > 1e-3, moved_g
+
+
+def test_tss_leaves_stay_pinned_at_zero():
+    import importlib
+    model_mod = importlib.import_module("prospective.model")
+    m = model_mod.build("tss", vocab=40, seed=0, d_model=32, n_heads=2,
+                        n_layers=1)
+    mix = m.blocks[0].mix
+    opt = torch.optim.AdamW(m.parameters(), lr=3e-2)
+    x = torch.randint(0, 40, (4, 24))
+    for _ in range(10):
+        m(x).sum().backward()
+        opt.step()
+        opt.zero_grad(set_to_none=True)
+        m.project_()
+    assert torch.equal(mix.fil_M, torch.zeros_like(mix.fil_M))
+    assert torch.equal(mix.fil_gamma, torch.zeros_like(mix.fil_gamma))
+    # and T must be repaired above the drive-stability bound h/2
+    assert (mix.fil_T > 0.5).all(), mix.fil_T
+
+
+def test_projection_keeps_coefficients_jury_stable():
+    from prospective.coefficients import (jury_ok, project_leaves,
+                                          prospective_coefficients)
+    g = torch.Generator().manual_seed(3)
+    M = torch.rand(200, generator=g) * 2 - 1.0      # includes negatives
+    gam = torch.rand(200, generator=g) * 2 - 1.0
+    T = torch.rand(200, generator=g) * 2 - 1.0
+    project_leaves(M, gam, T)
+    a, b, _, _ = prospective_coefficients(M, gam, T)
+    assert jury_ok(a, b).all()

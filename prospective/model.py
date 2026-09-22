@@ -11,12 +11,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from .coefficients import H_TOKEN, TSS_T0
+from .coefficients import (GEN_GAMMA0, GEN_M0, GEN_T0, H_TOKEN, TSS_T0,
+                           project_leaves)
 from .rules import ARMS, FILTER_ARMS, recurrent_ref
 
-#: every arm starts at a point where it is native (or, for gated/nesterov,
-#: where it has no free parameter at all)
-NATIVE_START = {"qhm": 1.0, "tss": TSS_T0}
+#: QHM's declared start: nu = 1 is the native function exactly. Stored
+#: directly and clamped to [0, 1] after each step, as the ladder did -- a
+#: sigmoid start at nu = 1 has derivative ~3e-4 and cannot move.
+QHM_NU0, QHM_DOMAIN = 1.0, (0.0, 1.0)
 
 
 class Mixer(nn.Module):
@@ -30,17 +32,18 @@ class Mixer(nn.Module):
         self.gates = nn.Linear(d_model, 4 * n_heads, bias=True)
         self.out = nn.Linear(d_model, d_model, bias=False)
         if arm in FILTER_ARMS:
-            # generalized learns all three; tss pins M = gamma = 0
-            self.raw_T = nn.Parameter(torch.full((n_heads,),
-                                                 _inv_softplus(NATIVE_START["tss"])))
-            learn = arm == "generalized"
-            self.raw_M = nn.Parameter(torch.full((n_heads,), _inv_softplus(1e-4)),
-                                      requires_grad=learn)
-            self.raw_g = nn.Parameter(torch.full((n_heads,), _inv_softplus(1e-4)),
-                                      requires_grad=learn)
+            # stored DIRECTLY, projected after each step; no softplus
+            gen = arm == "generalized"
+            self.fil_T = nn.Parameter(torch.full((n_heads,),
+                                                 GEN_T0 if gen else TSS_T0))
+            self.fil_M = nn.Parameter(torch.full((n_heads,),
+                                                 GEN_M0 if gen else 0.0),
+                                      requires_grad=gen)
+            self.fil_gamma = nn.Parameter(torch.full((n_heads,),
+                                                     GEN_GAMMA0 if gen else 0.0),
+                                          requires_grad=gen)
         if arm == "qhm":
-            self.raw_nu = nn.Parameter(torch.zeros(()))   # sigmoid-free: nu starts at 1
-            self.raw_nu.data.fill_(8.0)                   # sigmoid(8) ~ 1
+            self.nu = nn.Parameter(torch.full((), QHM_NU0))
 
     def forward(self, h):
         B, T, D = h.shape
@@ -56,10 +59,10 @@ class Mixer(nn.Module):
         p = log_alpha.exp().unsqueeze(-1) * k
         extra = {}
         if self.arm in FILTER_ARMS:
-            extra = dict(mass=F.softplus(self.raw_M), gamma=F.softplus(self.raw_g),
-                         response=F.softplus(self.raw_T), h=H_TOKEN)
+            extra = dict(mass=self.fil_M, gamma=self.fil_gamma,
+                         response=self.fil_T, h=H_TOKEN)
         if self.arm == "qhm":
-            extra = dict(nu=torch.sigmoid(self.raw_nu))
+            extra = dict(nu=self.nu)
         o, _ = recurrent_ref(self.arm, q=q, k=k, v=v, log_alpha=log_alpha,
                              log_mu=log_mu, p=p, beta=beta, eta=eta, **extra)
         return self.out(o.reshape(B, T, D))
@@ -95,10 +98,18 @@ class Model(nn.Module):
             h = blk(h)
         return self.head(self.norm(h))
 
-
-def _inv_softplus(y):
-    import math
-    return math.log(math.expm1(y))
+    @torch.no_grad()
+    def project_(self):
+        """Call after every optimizer step. Keeps every arm's own leaves in
+        their admissible set; a no-op for arms without leaves."""
+        for blk in self.blocks:
+            m = blk.mix
+            if hasattr(m, "fil_M"):
+                project_leaves(m.fil_M.data, m.fil_gamma.data, m.fil_T.data,
+                               h=H_TOKEN,
+                               freeze_mass_gamma=m.arm != "generalized")
+            if hasattr(m, "nu"):
+                m.nu.data.clamp_(*QHM_DOMAIN)
 
 
 def build(arm, vocab, seed, **kw):

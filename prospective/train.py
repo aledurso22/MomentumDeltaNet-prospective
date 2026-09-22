@@ -88,6 +88,7 @@ def run(args):
             loss.backward()
             torch.nn.utils.clip_grad_norm_(models[a].parameters(), args.clip)
             opts[a].step()
+            models[a].project_()          # leaves are stored directly
         if step % args.eval_every == 0 or step == args.steps:
             for a in arms:
                 acc = evaluate(models[a], eval_batches)
@@ -106,7 +107,8 @@ def run(args):
         final={a: curves[a][-1] for a in arms},
         learned={a: {n: p.detach().cpu().tolist()
                      for n, p in models[a].named_parameters()
-                     if n.split(".")[-1].startswith("raw_")} for a in arms},
+                     if n.split(".")[-1] in ("fil_M", "fil_gamma", "fil_T",
+                                             "nu")} for a in arms},
         wall_seconds=time.time() - t0)
     if args.out:
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
