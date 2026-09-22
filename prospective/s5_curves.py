@@ -42,23 +42,39 @@ def main():
         print("no records found", file=sys.stderr)
         return
     print("KEYS:", " ".join(sorted(rows[0][2])))
+    print("FIRST RECORD:", json.dumps(rows[0][2])[:400])
 
-    def pick(d, *needles):
-        for k in d:
+    def flat(d, prefix=""):
+        """Flatten one nested level, so validation.accuracy is reachable."""
+        out = {}
+        for k, v in d.items():
+            if isinstance(v, dict):
+                out.update(flat(v, f"{prefix}{k}."))
+            else:
+                out[f"{prefix}{k}"] = v
+        return out
+
+    flat_rows = [(arm, seed, flat(d)) for arm, seed, d in rows]
+    fields = flat_rows[0][2]
+
+    def pick(*needles):
+        for k in fields:
             low = k.lower()
             if all(n in low for n in needles):
                 return k
         return None
 
-    acc = pick(rows[0][2], "val", "acc") or pick(rows[0][2], "acc")
-    loss = pick(rows[0][2], "val", "loss") or pick(rows[0][2], "loss")
-    ep = pick(rows[0][2], "epoch") or "epoch"
+    acc = (pick("val", "acc") or pick("acc") or pick("validation")
+           or pick("val"))
+    loss = pick("val", "loss") or pick("loss") or pick("ce")
+    ep = pick("epoch") or "epoch"
     print(f"USING: epoch={ep!r} acc={acc!r} loss={loss!r}\n")
     if acc is None:
+        print("FLAT KEYS:", " ".join(sorted(fields)))
         return
 
     by = collections.defaultdict(list)
-    for arm, _seed, d in rows:
+    for arm, _seed, d in flat_rows:
         if d.get(ep) is not None:
             by[(arm, d[ep])].append((d[acc], d.get(loss)))
 
