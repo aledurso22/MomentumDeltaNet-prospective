@@ -468,7 +468,7 @@ skipped rather than averaging it in.
 
 ### 8.3 What this establishes
 
-**Zero mass never trains.** 0/8 seeds above chance; generalized beats it 8/8 at
+**The undamped arm never trains.** 0/8 seeds above chance; generalized beats it 8/8 at
 p = 0.0039 on *all five* metrics. This is the controlled comparison: same code
 path, same `T` initialization, the only difference being whether `M` and `γ` may
 leave zero.
@@ -496,7 +496,10 @@ high-frequency response:
 | TSS (`M = γ = 0`), `T = 0.79–1.28` | high-pass | **2.3 – 4.5×** |
 | Generalized, `M = 0.05–0.47`, `γ = 0.9–1.9` | low-pass | **0.44 – 0.98×** |
 
-and **damping, not mass, does most of the work**:
+and **damping, not mass, does the work** — the same conclusion Part 1 reaches
+analytically, where at `λ̄ = 1` the S5 recurrence factors as
+`(z−1)(z−(α+δ))` with `α+δ = (M+hT)/(M+hT+hγ)`, which equals 1 for *any* mass
+whenever `γ = 0`:
 
 ```
 gamma=1, T=1:   M=0.00 → 1.00    M=0.10 → 0.88    M=0.40 → 0.65
@@ -559,7 +562,8 @@ pretrained native checkpoint. If it recovers, the explanation holds.
 Across Part 1 and Part 2, four settings: two architectures × two placements of
 the same coefficient map.
 
-* **Zero mass and damping is unusable.** Non-finite on the first update in S5
+* **Zero damping is unusable** (the arms are at `M = γ = 0`, but the binding
+  variable is `γ`). Non-finite on the first update in S5
   (companion roots 1.16–1.63 at `T = 0.05`); 0/8 seeds above chance in MDN, beaten
   8/8 at p = 0.0039.
 * **Finite mass and damping makes the law run**, and the learned regime is the
