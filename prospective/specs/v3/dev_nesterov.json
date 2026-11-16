@@ -1,0 +1,32 @@
+[
+ {
+  "label": "nesterov#0",
+  "arm": "nesterov",
+  "lr": 0.0007
+ },
+ {
+  "label": "nesterov#1",
+  "arm": "nesterov",
+  "lr": 0.001
+ },
+ {
+  "label": "nesterov#2",
+  "arm": "nesterov",
+  "lr": 0.0015
+ },
+ {
+  "label": "nesterov#3",
+  "arm": "nesterov",
+  "lr": 0.002
+ },
+ {
+  "label": "nesterov#4",
+  "arm": "nesterov",
+  "lr": 0.003
+ },
+ {
+  "label": "nesterov#5",
+  "arm": "nesterov",
+  "lr": 0.005
+ }
+]

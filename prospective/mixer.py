@@ -45,6 +45,28 @@ from fla.ops.momentum_delta_rule import chunk_mode_rule
 from .coefficients import GEN_GAMMA0, GEN_M0, GEN_T0, TSS_T0
 from .reference import reference_recurrence
 from .rules import ARMS, FILTER_ARMS
+from .writers import REFERENCE_CFG, WRITER_ARMS
+
+#: every arm the mixer accepts: the six v2 rules and the three v3 writers
+ALL_ARMS = ARMS + WRITER_ARMS
+#: official parameters that ONLY the MDN gates use. The writers keep them
+#: (so shared init is identical across arms) but never read them; they get
+#: no gradient and AdamW leaves them at their initial values.
+NATIVE_GATE_PARAMS = ("a_proj.weight", "b_proj.weight", "m_proj.weight",
+                      "e_proj.weight", "A_log", "dt_bias", "mu_bias",
+                      "Mu_log", "log_factor")
+#: the momentum-gate parameters: unused by `gated`, which forces mu = 0
+MOMENTUM_GATE_PARAMS = ("m_proj.weight", "Mu_log", "mu_bias")
+
+
+def unused_by_design(arm):
+    """Official parameters an arm keeps (for identical shared init) but never
+    reads, so they get no gradient."""
+    if arm in WRITER_ARMS:
+        return NATIVE_GATE_PARAMS
+    if arm == "gated":
+        return MOMENTUM_GATE_PARAMS
+    return ()
 
 BACKENDS = ("reference", "official_chunk")
 
@@ -67,8 +89,8 @@ QHM_NU0, QHM_DOMAIN = 1.0, (0.0, 1.0)
 class ProspectiveMDN(MomentumDeltaNet):
 
     def __init__(self, arm, hidden_size, num_heads, head_dim, expand_v=2,
-                 backend="reference", layer_idx=None):
-        if arm not in ARMS:
+                 backend="reference", layer_idx=None, writer_cfg=None):
+        if arm not in ALL_ARMS:
             raise ValueError(arm)
         if backend not in BACKENDS:
             raise ValueError(backend)
@@ -78,6 +100,9 @@ class ProspectiveMDN(MomentumDeltaNet):
         assert self.num_v_heads == self.num_heads
         self.arm = arm
         self.backend = backend
+        # writer hyperparameters are fixed constants, not learned leaves
+        self.writer_cfg = (dict(REFERENCE_CFG[arm], **(writer_cfg or {}))
+                           if arm in WRITER_ARMS else None)
         # arm leaves come AFTER the official parameters and use torch.full,
         # which consumes no RNG: every shared tensor is drawn identically
         if arm in FILTER_ARMS:
@@ -182,7 +207,8 @@ class ProspectiveMDN(MomentumDeltaNet):
 
     def backend_reference(self, f):
         assert self.use_p_times_alpha
-        return reference_recurrence(self.arm, f, self.leaves()).to(f["q"].dtype)
+        return reference_recurrence(self.arm, f, self.leaves(),
+                                    self.writer_cfg).to(f["q"].dtype)
 
     def forward(self, hidden_states, attention_mask=None,
                 past_key_values=None, use_cache=False, **kwargs):

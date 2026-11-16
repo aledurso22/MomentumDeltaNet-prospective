@@ -4,9 +4,12 @@ Base: this repository at **c6e77fa261fb0c002fae1a14b6209a5b28d2edc9**
 (`HuuYuLong/MomentumDeltaNet`, ICML 2026). Branch `prospective-rules` changes
 nothing under `flash-linear-attention/` or `flame/`.
 
-Reports: [`reports/v2_official_mixer.md`](reports/v2_official_mixer.md)
-(current) and [`reports/v1_reduced_mixer.md`](reports/v1_reduced_mixer.md)
-(superseded, with erratum; code at `8d39b8a`).
+Reports: [`reports/v3_memory_motion_plan.md`](reports/v3_memory_motion_plan.md)
+(next experiment: joint memory–motion writer vs controls),
+[`reports/v2_official_mixer.md`](reports/v2_official_mixer.md) (restored
+mixer; its wave is not launched) and
+[`reports/v1_reduced_mixer.md`](reports/v1_reduced_mixer.md) (superseded, with
+erratum; code at `8d39b8a`).
 
 | file | what |
 |---|---|
@@ -14,6 +17,8 @@ Reports: [`reports/v2_official_mixer.md`](reports/v2_official_mixer.md)
 | `rules.py` | the six arms as recurrent references, line-for-line against `naive.py` |
 | `reference.py` | the `reference` backend: chunk_mode_rule's preprocessing + `rules.py` (no fla import) |
 | `mixer.py` | `ProspectiveMDN`: the official `MomentumDeltaNet` layer with a recurrent-backend hook |
+| `writers.py` | v3 writers: `joint` (constant-velocity Kalman), `rls` (full key covariance), `geometric` (fixed-gain inertial) |
+| `experiment_v3.py`, `specs/v3/` | v3 protocol: arms, primary score, equal-budget dev grids, selection, confirmation, analysis |
 | `model.py` | shared small backbone around the mixer; `build()` gives identical shared init |
 | `task.py` | MQAR with revision; lag metric with counts; legacy v1 metrics |
 | `train.py` | six arms in lockstep, FP32, production config as defaults |
@@ -24,6 +29,7 @@ Reports: [`reports/v2_official_mixer.md`](reports/v2_official_mixer.md)
 | `run_wave.sh`, `run_seed.sh`, `seed.sbatch` | launchers (output in `mdn-bridge-runs-v2`) |
 | `aggregate.py`, `summary.py`, `parse_log.py` | analysis; never mix mixer versions |
 | `test_coefficients.py`, `test_rules.py`, `test_task.py` | CPU tests |
+| `test_writers.py`, `test_experiment_v3.py` | v3 writers vs dense FP64 / global Kalman references; protocol checks |
 | `test_model_cpu.py`, `cpu_stub/` | model-level CPU plumbing tests with the real layer source and CPU stand-ins for Triton modules |
 | `test_integration.py` | GPU tests against the official layer and chunk kernel, errors vs FP64 to JSON |
 

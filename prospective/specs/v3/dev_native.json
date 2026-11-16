@@ -1,0 +1,32 @@
+[
+ {
+  "label": "native#0",
+  "arm": "native",
+  "lr": 0.0007
+ },
+ {
+  "label": "native#1",
+  "arm": "native",
+  "lr": 0.001
+ },
+ {
+  "label": "native#2",
+  "arm": "native",
+  "lr": 0.0015
+ },
+ {
+  "label": "native#3",
+  "arm": "native",
+  "lr": 0.002
+ },
+ {
+  "label": "native#4",
+  "arm": "native",
+  "lr": 0.003
+ },
+ {
+  "label": "native#5",
+  "arm": "native",
+  "lr": 0.005
+ }
+]

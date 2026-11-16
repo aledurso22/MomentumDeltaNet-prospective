@@ -1,0 +1,50 @@
+[
+ {
+  "label": "rls#0",
+  "arm": "rls",
+  "lr": 0.001,
+  "writer": {
+   "rho": 1.0
+  }
+ },
+ {
+  "label": "rls#1",
+  "arm": "rls",
+  "lr": 0.001,
+  "writer": {
+   "rho": 0.98
+  }
+ },
+ {
+  "label": "rls#2",
+  "arm": "rls",
+  "lr": 0.001,
+  "writer": {
+   "rho": 0.9
+  }
+ },
+ {
+  "label": "rls#3",
+  "arm": "rls",
+  "lr": 0.003,
+  "writer": {
+   "rho": 1.0
+  }
+ },
+ {
+  "label": "rls#4",
+  "arm": "rls",
+  "lr": 0.003,
+  "writer": {
+   "rho": 0.98
+  }
+ },
+ {
+  "label": "rls#5",
+  "arm": "rls",
+  "lr": 0.003,
+  "writer": {
+   "rho": 0.9
+  }
+ }
+]

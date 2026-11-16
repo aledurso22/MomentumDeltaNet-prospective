@@ -50,6 +50,7 @@ stage() {   # stage <name> <command...>; never aborts the script
 : > "$OUT/status.txt"
 
 stage unit python -m pytest -q -p no:cacheprovider prospective/test_rules.py \
+  prospective/test_writers.py prospective/test_experiment_v3.py prospective/test_model_cpu.py \
   prospective/test_coefficients.py prospective/test_task.py
 stage integration_default env TRITON_CACHE_DIR="$CACHE_ROOT/default" \
   python -m pytest -s -q -p no:cacheprovider prospective/test_integration.py

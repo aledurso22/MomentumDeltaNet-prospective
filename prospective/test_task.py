@@ -125,3 +125,55 @@ def test_v1_immediate_was_not_an_eight_token_window():
     leg = m["legacy_immediate_revised"]
     assert (b["lag"][leg] > LAG_TOKENS).any()
     assert int(b["lag"][leg].max()) <= 16
+
+
+def test_lag_bins_partition_revised():
+    from prospective.task import LAG_BIN_METRICS
+    b = batch(6, bsz=256)
+    m = masks(b)
+    tot = sum(m[n].long() for n in LAG_BIN_METRICS)
+    assert torch.equal(tot.bool(), m["revised"]) and int(tot.max()) == 1
+    assert torch.equal(m["rev_lag_01_08"], m["rev_lag_le8"])
+
+
+def test_primary_score_definition():
+    from prospective.task import NONINFERIORITY_MARGIN_PP, primary_score
+    assert primary_score({"rev_lag_le8": 40.0, "untouched": 80.0}) == 60.0
+    assert NONINFERIORITY_MARGIN_PP == 1.0
+
+
+def test_heldout_suites_keep_semantics():
+    from prospective.task import HELDOUT, make_batch_heldout
+    for name, cfg in HELDOUT.items():
+        b = make_batch_heldout(64, **cfg, generator=torch.Generator().manual_seed(7))
+        assert b["vocab"] == 58, name
+        x, y = b["x"], b["y"]
+        scored = y != IGNORE
+        assert (x[scored] == b["query_tok"]).all(), name
+        for r in range(8):
+            for s in torch.nonzero(scored[r]).flatten().tolist():
+                want = _lag_from_tokens(x[r], s, cfg["n_keys"], b["query_tok"])
+                assert int(b["lag"][r, s]) == want, (name, r, s)
+        # distractor keys are never queried
+        nd = cfg["n_distractors"]
+        if nd:
+            start = 2 * (cfg["n_pairs"] + cfg["n_revisions"])
+            for r in range(8):
+                dkeys = set(x[r, start:start + 2 * nd:2].tolist())
+                qkeys = set(x[r][torch.roll(scored[r], -1)].tolist())
+                assert not (dkeys & qkeys), name
+
+
+def test_heldout_delays_are_longer():
+    from prospective.task import HELDOUT, make_batch_heldout
+    base = masks(batch(8, bsz=256))
+    b = make_batch_heldout(256, **HELDOUT["delay16"], generator=torch.Generator().manual_seed(8))
+    assert int(b["lag"][masks(b)["revised"]].min()) >= 2 + 2 * 16
+    assert masks(b)["rev_lag_le8"].sum() == 0 and base["rev_lag_le8"].sum() > 0
+
+
+def test_production_generator_untouched_by_heldout_code():
+    v1 = _v1_task()
+    new = batch(0, bsz=16)
+    old = v1.make_batch(16, **PRODUCTION_TASK, generator=torch.Generator().manual_seed(0))
+    assert torch.equal(new["x"], old["x"]) and torch.equal(new["y"], old["y"])

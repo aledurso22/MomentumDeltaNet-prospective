@@ -1,0 +1,56 @@
+[
+ {
+  "label": "joint#0",
+  "arm": "joint",
+  "lr": 0.001,
+  "writer": {
+   "rho": 1.0,
+   "T0": 4.0
+  }
+ },
+ {
+  "label": "joint#1",
+  "arm": "joint",
+  "lr": 0.001,
+  "writer": {
+   "rho": 0.98,
+   "T0": 4.0
+  }
+ },
+ {
+  "label": "joint#2",
+  "arm": "joint",
+  "lr": 0.001,
+  "writer": {
+   "rho": 0.98,
+   "T0": 16.0
+  }
+ },
+ {
+  "label": "joint#3",
+  "arm": "joint",
+  "lr": 0.003,
+  "writer": {
+   "rho": 1.0,
+   "T0": 4.0
+  }
+ },
+ {
+  "label": "joint#4",
+  "arm": "joint",
+  "lr": 0.003,
+  "writer": {
+   "rho": 0.98,
+   "T0": 4.0
+  }
+ },
+ {
+  "label": "joint#5",
+  "arm": "joint",
+  "lr": 0.003,
+  "writer": {
+   "rho": 0.98,
+   "T0": 16.0
+  }
+ }
+]

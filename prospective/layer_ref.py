@@ -70,7 +70,7 @@ def mixer_forward_ref(m, h, P):
                       ("fil_T", "response"), ("nu", "nu")):
         if name in P:
             leaves[key] = P[name]
-    o = reference_recurrence(m.arm, f, leaves)
+    o = reference_recurrence(m.arm, f, leaves, getattr(m, "writer_cfg", None))
 
     g = _lin(P, "g_proj", h).view(B, T, H, dv)
     o = o * torch.rsqrt(o.pow(2).mean(-1, keepdim=True) + m.o_norm.eps)

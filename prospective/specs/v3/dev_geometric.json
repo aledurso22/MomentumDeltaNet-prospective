@@ -1,0 +1,56 @@
+[
+ {
+  "label": "geometric#0",
+  "arm": "geometric",
+  "lr": 0.001,
+  "writer": {
+   "A": 0.05,
+   "G": 1.0
+  }
+ },
+ {
+  "label": "geometric#1",
+  "arm": "geometric",
+  "lr": 0.001,
+  "writer": {
+   "A": 0.0125,
+   "G": 1.0
+  }
+ },
+ {
+  "label": "geometric#2",
+  "arm": "geometric",
+  "lr": 0.001,
+  "writer": {
+   "A": 0.05,
+   "G": 0.5
+  }
+ },
+ {
+  "label": "geometric#3",
+  "arm": "geometric",
+  "lr": 0.003,
+  "writer": {
+   "A": 0.05,
+   "G": 1.0
+  }
+ },
+ {
+  "label": "geometric#4",
+  "arm": "geometric",
+  "lr": 0.003,
+  "writer": {
+   "A": 0.0125,
+   "G": 1.0
+  }
+ },
+ {
+  "label": "geometric#5",
+  "arm": "geometric",
+  "lr": 0.003,
+  "writer": {
+   "A": 0.05,
+   "G": 0.5
+  }
+ }
+]

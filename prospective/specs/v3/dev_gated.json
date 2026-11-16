@@ -1,0 +1,32 @@
+[
+ {
+  "label": "gated#0",
+  "arm": "gated",
+  "lr": 0.0007
+ },
+ {
+  "label": "gated#1",
+  "arm": "gated",
+  "lr": 0.001
+ },
+ {
+  "label": "gated#2",
+  "arm": "gated",
+  "lr": 0.0015
+ },
+ {
+  "label": "gated#3",
+  "arm": "gated",
+  "lr": 0.002
+ },
+ {
+  "label": "gated#4",
+  "arm": "gated",
+  "lr": 0.003
+ },
+ {
+  "label": "gated#5",
+  "arm": "gated",
+  "lr": 0.005
+ }
+]

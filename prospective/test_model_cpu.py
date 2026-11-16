@@ -24,11 +24,10 @@ except Exception:
 
 from prospective.layer_ref import mixer_forward_ref, params_as  # noqa: E402
 from prospective.model import ARM_LEAVES, build, shared_parameter_check  # noqa: E402
-from prospective.mixer import ProspectiveMDN  # noqa: E402
-from prospective.rules import ARMS  # noqa: E402
+from prospective.mixer import ALL_ARMS, ProspectiveMDN, unused_by_design  # noqa: E402
+from prospective.model import unused_parameters  # noqa: E402
 from prospective.task import PRODUCTION_TASK, make_batch  # noqa: E402
-
-ALL_ARMS = ARMS
+from prospective.writers import WRITER_ARMS  # noqa: E402
 
 
 def rel(a, b):
@@ -100,3 +99,25 @@ def test_shared_init_identical_across_arms():
 def test_whole_sequence_guard():
     with pytest.raises(NotImplementedError):
         layer("native")(torch.randn(1, 4, 128), use_cache=True)
+
+
+@pytest.mark.parametrize("arm", ALL_ARMS)
+def test_unused_parameters_are_exactly_the_declared_ones(arm):
+    m = build(arm, vocab=58, seed=0)
+    b = make_batch(4, **PRODUCTION_TASK, generator=torch.Generator().manual_seed(0))
+    torch.nn.functional.cross_entropy(m(b["x"]).reshape(-1, 58), b["y"].reshape(-1),
+                                      ignore_index=-100).backward()
+    unused = set(unused_parameters(m))
+    want = {f"blocks.{i}.mix.{n}" for i in range(2) for n in unused_by_design(arm)}
+    assert unused == want, unused ^ want
+
+
+@pytest.mark.parametrize("arm", WRITER_ARMS)
+def test_writer_gradients_reach_shared_frontend(arm):
+    m = layer(arm)
+    m(torch.randn(2, 52, 128)).__getitem__(0).sum().backward()
+    for n in ("q_proj.weight", "k_proj.weight", "v_proj.weight", "q_conv1d.weight",
+              "k_conv1d.weight", "v_conv1d.weight", "D_log", "g_proj.weight",
+              "o_norm.weight", "o_proj.weight"):
+        p = dict(m.named_parameters())[n]
+        assert p.grad is not None and p.grad.abs().max() > 0, n

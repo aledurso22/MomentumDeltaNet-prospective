@@ -168,7 +168,12 @@ historical context only.
 
 ---
 
-## 5. Training-wave configuration (to launch after §3 and §4 pass)
+## 5. Training-wave configuration — **not to be launched**
+
+> The eight-seed rerun of the six v2 arms below is **cancelled**. The arms
+> are preserved, but the next main experiment is v3
+> ([`v3_memory_motion_plan.md`](v3_memory_motion_plan.md)). This section is
+> kept as the record of the configuration that was proposed.
 
 | | |
 |---|---|

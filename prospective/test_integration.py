@@ -48,10 +48,10 @@ import triton.language as tl  # noqa: E402
 from fla.layers.momentum_deltanet import MomentumDeltaNet  # noqa: E402
 
 from prospective.layer_ref import mixer_forward_ref, params_as  # noqa: E402
-from prospective.mixer import ProspectiveMDN  # noqa: E402
-from prospective.model import ARM_LEAVES, build, shared_parameter_check  # noqa: E402
+from prospective.mixer import ALL_ARMS, ProspectiveMDN, unused_by_design  # noqa: E402
+from prospective.model import (ARM_LEAVES, build, shared_parameter_check,  # noqa: E402
+                               unused_parameters)
 from prospective.reference import reference_recurrence  # noqa: E402
-from prospective.rules import ARMS  # noqa: E402
 from prospective.task import PRODUCTION_TASK, make_batch  # noqa: E402
 from prospective.train import set_fp32  # noqa: E402
 
@@ -250,7 +250,8 @@ def test_official_chunk_layer_vs_fp64(T):
 
 
 def test_reference_layer_vs_fp64_every_arm():
-    for arm in ARMS:
+    """All nine arms, including the three v3 writers."""
+    for arm in ALL_ARMS:
         m = layer(arm, "reference")
         with torch.no_grad():
             if arm == "generalized":
@@ -358,7 +359,7 @@ def _nontrivial_leaves(m):
                 x.nu.fill_(0.6)
 
 
-@pytest.mark.parametrize("arm", ARMS)
+@pytest.mark.parametrize("arm", ALL_ARMS)
 def test_future_tokens_cannot_change_earlier_outputs(arm):
     m = build(arm, vocab=58, seed=0).to(DEV).eval()
     _nontrivial_leaves(m)
@@ -376,7 +377,7 @@ def test_future_tokens_cannot_change_earlier_outputs(arm):
 
 
 def test_shared_tensors_initialise_identically_across_arms():
-    models = {a: build(a, vocab=58, seed=501) for a in ARMS}
+    models = {a: build(a, vocab=58, seed=501) for a in ALL_ARMS}
     ref = models["native"]
     for a, m in models.items():
         assert shared_parameter_check(ref, m) == [], a
@@ -386,6 +387,19 @@ def test_shared_tensors_initialise_identically_across_arms():
     mix = ref.blocks[0].mix
     assert abs(mix.q_proj.weight.std().item() - 0.02) < 2e-3
     assert abs(mix.q_conv1d.weight.std().item() - 0.02) < 5e-3
+
+
+@pytest.mark.parametrize("arm", ALL_ARMS)
+def test_unused_parameters_on_gpu(arm):
+    m = build(arm, vocab=58, seed=0).to(DEV)
+    b = make_batch(4, **PRODUCTION_TASK, generator=torch.Generator().manual_seed(0))
+    torch.nn.functional.cross_entropy(m(b["x"].to(DEV)).reshape(-1, 58),
+                                      b["y"].to(DEV).reshape(-1),
+                                      ignore_index=-100).backward()
+    got = set(unused_parameters(m))
+    want = {f"blocks.{i}.mix.{n}" for i in range(2) for n in unused_by_design(arm)}
+    REPORT.setdefault("unused_parameters", {})[arm] = sorted(got)
+    assert got == want, got ^ want
 
 
 def test_leaves_actually_move_under_optimization():

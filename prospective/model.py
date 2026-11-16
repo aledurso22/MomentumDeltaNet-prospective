@@ -15,8 +15,7 @@ import torch
 import torch.nn as nn
 
 from .coefficients import H_TOKEN, project_leaves
-from .mixer import QHM_DOMAIN, ProspectiveMDN
-from .rules import ARMS
+from .mixer import ALL_ARMS, QHM_DOMAIN, ProspectiveMDN
 
 #: production model, as specified for the v2 rerun
 MODEL_DEFAULTS = dict(d_model=128, n_heads=4, head_dim=32, expand_v=2,
@@ -25,12 +24,13 @@ MODEL_DEFAULTS = dict(d_model=128, n_heads=4, head_dim=32, expand_v=2,
 
 class Block(nn.Module):
     def __init__(self, arm, d_model, n_heads, head_dim, expand_v, backend,
-                 layer_idx):
+                 layer_idx, writer_cfg=None):
         super().__init__()
         self.n1, self.n2 = nn.LayerNorm(d_model), nn.LayerNorm(d_model)
         self.mix = ProspectiveMDN(arm, hidden_size=d_model, num_heads=n_heads,
                                   head_dim=head_dim, expand_v=expand_v,
-                                  backend=backend, layer_idx=layer_idx)
+                                  backend=backend, layer_idx=layer_idx,
+                                  writer_cfg=writer_cfg)
         self.mlp = nn.Sequential(nn.Linear(d_model, 2 * d_model), nn.GELU(),
                                  nn.Linear(2 * d_model, d_model))
 
@@ -41,14 +41,15 @@ class Block(nn.Module):
 
 class Model(nn.Module):
     def __init__(self, arm, vocab, d_model=128, n_heads=4, head_dim=32,
-                 expand_v=2, n_layers=2, backend="reference"):
+                 expand_v=2, n_layers=2, backend="reference", writer_cfg=None):
         super().__init__()
-        if arm not in ARMS:
+        if arm not in ALL_ARMS:
             raise ValueError(arm)
         self.arm = arm
         self.embed = nn.Embedding(vocab, d_model)
         self.blocks = nn.ModuleList(
-            Block(arm, d_model, n_heads, head_dim, expand_v, backend, i)
+            Block(arm, d_model, n_heads, head_dim, expand_v, backend, i,
+                  writer_cfg)
             for i in range(n_layers))
         self.norm = nn.LayerNorm(d_model)
         self.head = nn.Linear(d_model, vocab, bias=True)
@@ -104,3 +105,11 @@ def shared_parameter_check(a, b):
     sa, sb = a.state_dict(), b.state_dict()
     common = set(sa) & set(sb)
     return [n for n in sorted(common) if not torch.equal(sa[n], sb[n])]
+
+
+def unused_parameters(model):
+    """Trainable parameters that received NO gradient in the last backward.
+    For the writer arms these are exactly the MDN-gate-only parameters
+    (mixer.NATIVE_GATE_PARAMS) in every block."""
+    return [n for n, p in model.named_parameters()
+            if p.requires_grad and p.grad is None]

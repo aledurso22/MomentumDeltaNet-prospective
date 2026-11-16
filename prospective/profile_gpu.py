@@ -1,6 +1,6 @@
 """Measure, on one GPU, what one seed of the lockstep wave costs.
 
-Builds the six models exactly as `train.py` does (same process, all resident,
+Builds the models exactly as `train.py` does (default: all nine arms; same process, all resident,
 FP32, reference backend, production task at batch 16), warms up, then for each
 arm separately measures synchronised wall time of
 
@@ -26,11 +26,14 @@ import time
 
 import torch
 
+from .experiment_v3 import ARMS as V3_ARMS
+from .mixer import ALL_ARMS
 from .model import build
-from .rules import ARMS
+from .rules import ARMS as V2_ARMS
 from .task import make_batch
-from .train import (evaluate, git_sha, loss_of, model_kwargs, parser,
-                    set_fp32, task_kwargs, to_dev)
+from .train import (evaluate, git_sha, instances, loss_of, model_kwargs,
+                    parser, set_fp32, task_kwargs, to_dev)
+from .writers import state_numbers
 
 
 def sync_time(fn, dev):
@@ -59,12 +62,17 @@ def main():
     eval_batches = [to_dev(make_batch(args.eval_bsz, **task,
                                       generator=eval_gen), dev)
                     for _ in range(args.eval_batches)]
-    arms = args.arms or list(ARMS)
+    if not (args.spec or args.arms):
+        args.arms = list(ALL_ARMS)          # all nine: v2 six + three writers
+    inst = instances(args)
+    arms = [lab for lab, _, _, _ in inst]
+    arm_of = {lab: arm for lab, arm, _, _ in inst}
     models, opts = {}, {}
-    for a in arms:
-        models[a] = build(a, vocab, seed=args.seed, **model_kwargs(args)).to(dev)
-        opts[a] = torch.optim.AdamW(models[a].parameters(), lr=args.lr,
-                                    weight_decay=args.weight_decay)
+    for lab, arm, lr, wcfg in inst:
+        models[lab] = build(arm, vocab, seed=args.seed, writer_cfg=wcfg,
+                            **model_kwargs(args)).to(dev)
+        opts[lab] = torch.optim.AdamW(models[lab].parameters(), lr=lr,
+                                      weight_decay=args.weight_decay)
     n_params = {a: sum(x.numel() for x in m.parameters())
                 for a, m in models.items()}
 
@@ -116,13 +124,28 @@ def main():
             step_ms=1e3 * st.median([f + b_ + u for f, b_, u in
                                      zip(rec["fwd"], rec["bwd"], rec["upd"])]),
             eval_s=st.median(tev), peak_alloc_mib=peak_alloc / MiB,
-            peak_reserved_mib=peak_res / MiB, params=n_params[a])
+            peak_reserved_mib=peak_res / MiB, params=n_params[a],
+            # persistent recurrent state, separate from training memory
+            state_bytes_per_sequence=4 * args.n_layers * args.n_heads
+            * state_numbers(arm_of[a], args.head_dim,
+                            int(args.head_dim * args.expand_v)))
 
     gen_ms = 1e3 * st.median(tgen)
-    sum_step_s = sum(r["step_ms"] for r in rows.values()) / 1e3
-    sum_eval_s = sum(r["eval_s"] for r in rows.values())
     n_evals = args.steps // args.eval_every + (args.steps % args.eval_every != 0)
-    per_seed_s = args.steps * (gen_ms / 1e3 + sum_step_s) + n_evals * sum_eval_s
+
+    def per_seed(labels):
+        labels = [x for x in labels if x in rows]
+        step_s = sum(rows[x]["step_ms"] for x in labels) / 1e3
+        ev_s = sum(rows[x]["eval_s"] for x in labels)
+        return labels, step_s, ev_s, args.steps * (gen_ms / 1e3 + step_s) + n_evals * ev_s
+
+    _, sum_step_s, sum_eval_s, per_seed_s = per_seed(arms)
+    estimates = {}
+    for name, labels in (("all_profiled", arms), ("v2_six", V2_ARMS), ("v3_six", V3_ARMS)):
+        used, a_, b_, c_ = per_seed(labels)
+        if len(used) == len(labels):
+            estimates[name] = dict(arms=used, lockstep_step_ms=1e3 * a_ + gen_ms,
+                                   eval_round_s=b_, per_seed_minutes=c_ / 60)
 
     w = max(len(a) for a in arms)
     print(f"\n{torch.cuda.get_device_name(dev)}, bsz {args.bsz}, seq "
@@ -130,25 +153,28 @@ def main():
           f"median of {args.measure} steps after {args.warmup} warm-up")
     print(f"{'arm':>{w}}  {'fwd ms':>8} {'bwd ms':>8} {'upd ms':>7} "
           f"{'step ms':>8} {'eval s':>7} {'peak alloc':>11} {'peak res':>9} "
-          f"{'params':>8}")
+          f"{'params':>8} {'state/seq':>10}")
     for a, r in rows.items():
         print(f"{a:>{w}}  {r['fwd_ms']:8.1f} {r['bwd_ms']:8.1f} "
               f"{r['upd_ms']:7.1f} {r['step_ms']:8.1f} {r['eval_s']:7.2f} "
               f"{r['peak_alloc_mib']:8.0f} MiB {r['peak_reserved_mib']:6.0f} MiB"
-              f" {r['params']:8d}")
+              f" {r['params']:8d} {r['state_bytes_per_sequence'] / 1024:7.0f} KiB")
     print(f"\nbatch generation      {gen_ms:.2f} ms / step")
-    print(f"all six models + Adam {resident / MiB:.0f} MiB resident")
+    print(f"all {len(arms)} profiled models + AdamW state: {resident / MiB:.0f} MiB resident")
     print(f"one lockstep step     {1e3 * sum_step_s + gen_ms:.0f} ms")
     print(f"one eval round        {sum_eval_s:.1f} s  x {n_evals}")
-    print(f"=> one seed, {args.steps} steps: {per_seed_s / 60:.1f} min "
-          f"on this GPU (one seed per GPU; seeds run in parallel)")
+    for name, e in estimates.items():
+        print(f"=> {name:12s} one seed, {args.steps} steps, lockstep: "
+              f"{e['per_seed_minutes']:.1f} min on this GPU")
+    print("(estimates assume the lockstep process holds exactly those arms; "
+          "one seed per GPU, seeds in parallel)")
 
     out = dict(gpu=torch.cuda.get_device_name(dev), torch=torch.__version__,
                repo_sha=git_sha("."), config=vars(args), arms=rows,
                batch_gen_ms=gen_ms, resident_mib=resident / MiB,
                lockstep_step_ms=1e3 * sum_step_s + gen_ms,
                eval_round_s=sum_eval_s, n_evals=n_evals,
-               per_seed_minutes=per_seed_s / 60)
+               per_seed_minutes=per_seed_s / 60, estimates=estimates)
     if args.out:
         with open(args.out, "w") as fh:
             json.dump(out, fh, indent=1)

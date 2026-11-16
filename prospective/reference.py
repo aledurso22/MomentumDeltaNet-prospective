@@ -10,6 +10,7 @@ import torch
 
 from .coefficients import H_TOKEN
 from .rules import FILTER_ARMS, recurrent_ref
+from .writers import WRITER_ARMS, run_writer
 
 #: `fla.modules.l2norm.l2norm_fwd` default, used in-kernel by chunk_mode_rule
 L2_EPS = 1e-6
@@ -20,13 +21,19 @@ def l2norm_ref(x, eps=L2_EPS):
     return x * (1.0 / torch.sqrt((x * x).sum(-1, keepdim=True) + eps))
 
 
-def reference_recurrence(arm, f, leaves):
+def reference_recurrence(arm, f, leaves, writer_cfg=None):
     """The `reference` backend on frontend outputs `f`, in f's dtype (float64
     stays float64, so the same code gives the high-precision truth).
 
     Reproduces chunk_mode_rule's in-kernel preprocessing: q, k <- l2norm;
     p = alpha * l2norm(k); k is scaled by eta inside the rule; scale K^-1/2."""
     q, k = l2norm_ref(f["q"]), l2norm_ref(f["k"])
+    if arm in WRITER_ARMS:
+        # the writers use the normalised UNSCALED key and none of the MDN
+        # gates (alpha, beta, mu, eta); same dtype rule as recurrent_ref
+        q, k, v = (x if x.dtype == torch.float64 else x.to(torch.float32)
+                   for x in (q, k, f["v"]))
+        return run_writer(arm, q, k, v, writer_cfg, scale=k.shape[-1] ** -0.5)
     p = (k * f["log_alpha"].exp().unsqueeze(-1)).to(q.dtype)
     extra = dict(leaves)
     if arm in FILTER_ARMS:
