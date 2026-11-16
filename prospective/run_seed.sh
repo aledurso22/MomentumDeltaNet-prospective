@@ -6,7 +6,7 @@ set -euo pipefail
 
 SEED="${1:?usage: run_seed.sh <seed> [extra train.py flags...]}"
 shift
-OUT_ROOT="${OUT_ROOT:-$HOME/mdn-bridge}"
+OUT_ROOT="${OUT_ROOT:-$HOME/mdn-bridge-runs-v2}"
 STEPS="${STEPS:-4000}"
 
 cd "$(dirname "$0")/.."

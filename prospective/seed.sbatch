@@ -19,7 +19,7 @@ set -euo pipefail
 SEED="${SEED:-501}"
 REPO="${REPO:-/Local/durso/mdn-bridge}"
 VENV="${VENV:-/Local/durso/.venv-torch}"
-export OUT_ROOT="${OUT_ROOT:-/Local/durso/mdn-bridge-runs}"
+export OUT_ROOT="${OUT_ROOT:-/Local/durso/mdn-bridge-runs-v2}"
 
 cd "$REPO"
 source "$VENV/bin/activate"

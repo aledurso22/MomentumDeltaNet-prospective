@@ -3,8 +3,9 @@ results.json.
 
 Jobs 67448 and 67449 were killed by node cleanup a few seconds before their
 final write, so their results.json does not exist -- but every eval they
-reached is in the log. This reads the printed lines back. Only
-immediate_revised is recoverable this way; the other four metrics live in
+reached is in the log. This reads the printed lines back. Only the printed
+metric is recoverable this way: legacy_immediate_revised for v1 logs
+(`imm_rev`), rev_lag_le8 for v2 logs (`lag<=8`). The others live in
 results.json alone.
 """
 
@@ -13,7 +14,9 @@ import re
 import statistics
 import sys
 
-EVAL = re.compile(r"^\[\s*(\d+)\]\s+([\d.]+)s\s+imm_rev\s+(.*)$")
+#: v1 lines print `imm_rev` (the LEGACY immediate metric); v2 lines print
+#: `lag<=8 (n=...)` (the eight-token-lag metric). The two are not comparable.
+EVAL = re.compile(r"^\[\s*(\d+)\]\s+([\d.]+)s\s+(?:imm_rev|lag<=8 \(n=\d+\))\s+(.*)$")
 ARM = re.compile(r"(\w+):\s*([\d.]+|nan)")
 LEAF = re.compile(r"^\s+(\w+)\s+((?:\w+=[-\d.]+\.\.[-\d.]+\s*)+)$")
 
@@ -58,7 +61,8 @@ def main():
         return
     w = max(len(x) for x in arms)
     names = [p.split("/")[-1] for p in per_seed]
-    print(f"immediate_revised, mean of the last {a.tail} evals\n")
+    print(f"printed metric (v1: legacy_immediate_revised, v2: rev_lag_le8), "
+          f"mean of the last {a.tail} evals\n")
     print(" " * (w + 2) + "  ".join(f"{n[-18:]:>18}" for n in names)
           + "   mean    n_escaped")
     for arm in arms:

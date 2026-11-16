@@ -10,9 +10,10 @@ import argparse
 import json
 import math
 
-METRICS = ("overall", "revised", "untouched", "immediate_revised",
-           "later_revised")
-NATIVE_START = {"nu": "nu=1", "fil_T": "T=h", "fil_M": "M=0.025 gen / 0 tss",
+from .aggregate import normalise
+from .task import METRICS
+NATIVE_START = {"nu": "nu=1 (native)", "fil_T": "T=h",
+                "fil_M": "M=0.025 gen / 0 tss",
                 "fil_gamma": "gamma=1.0 gen / 0 tss"}
 
 
@@ -41,10 +42,11 @@ def main():
     ap.add_argument("--tail", type=int, default=10,
                     help="how many final evals to average")
     a = ap.parse_args()
-    r = json.load(open(a.results))
+    r = normalise(json.load(open(a.results)))
     arms, curves = r["arms"], r["curves"]
     present = [m for m in METRICS if m in curves[arms[0]][-1]]
 
+    print(f"mixer {r.get('provenance', {}).get('mixer_version', 'v1-reduced-mixer')}")
     print(f"seed {r['config']['seed']}  steps {r['config']['steps']}  "
           f"sha {r['provenance']['repo_sha'][:9]}  "
           f"{r['wall_seconds']/60:.1f} min")
@@ -58,8 +60,7 @@ def main():
                          f"+/-{tail_sd(curves[arm], a.tail, m):5.2f}")
         print(f"{arm:>{w}}  " + "  ".join(f"{c:>19}" for c in cells))
 
-    print("\nlearned leaves (softplus/sigmoid applied; native start in "
-          "brackets):")
+    print("\nlearned leaves (stored directly; start point in brackets):")
     for arm in arms:
         leaves = r.get("learned", {}).get(arm, {})
         if not leaves:

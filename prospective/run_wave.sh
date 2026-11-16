@@ -7,12 +7,15 @@
 # same elapsed second, when node cleanup for the finishing job took its
 # neighbours with it. No sbatch, no salloc, no srun below this line.
 #
-#   SEEDS="501 502 503" bash prospective/run_wave.sh -- <extra train.py flags>
+#   SEEDS="501 502 503 504" bash prospective/run_wave.sh -- <extra train.py flags>
+#
+# v2 writes to mdn-bridge-runs-v2 so v1 (reduced-mixer) results stay separate;
+# train.py defaults ARE the production config, so no task flags are needed.
 set -euo pipefail
 
 SEEDS="${SEEDS:-501 502 503}"
 STEPS="${STEPS:-4000}"
-OUT_ROOT="${OUT_ROOT:-$HOME/mdn-bridge-runs}"
+OUT_ROOT="${OUT_ROOT:-$HOME/mdn-bridge-runs-v2}"
 [ "${1:-}" = "--" ] && shift
 
 cd "$(dirname "$0")/.."

@@ -1,3 +1,56 @@
+# Part 2, v1 — The Momentum DeltaNet bridge with a REDUCED mixer (superseded)
+
+> **Status: historical, corrected.** This is the v1 report, preserved with its
+> numbers unchanged. Its code is commit `8d39b8a`. It is superseded by
+> [`v2_official_mixer.md`](v2_official_mixer.md), which restores the official
+> MDN layer around the same six rules. Read the erratum first; claims that it
+> lists are also corrected inline, marked **[corrected]**.
+>
+> **Erratum**
+>
+> 1. **The mixer was not the official MDN layer.** The matrix recurrence
+>    matched upstream (`naive.py`, bitwise), but `model.py` replaced the layer
+>    around it. It had no causal short convolutions, so a value token could
+>    not see its preceding key, and a QUERY token could not see the key it
+>    asks about, except through the recurrent memory. In a `[key, value]` /
+>    `[key, QUERY]` task this is a substantial confound. It also had no q
+>    normalisation, no output correction, no gated RMS output norm, and its
+>    own gates (sigmoid η, no θ constraint coupling α and β, no `min_log_mu`
+>    clamp, no official gate initialisation). Value dim equalled key dim
+>    (official: `expand_v = 2`). So every "Native MDN" below means **the native
+>    rule inside this reduced mixer**, not the published architecture.
+> 2. **The "immediate revision" metric was not an eight-token window.** §7.1
+>    says "rewrite ≤ `IMMEDIATE_GAP = 8` tokens back". The code checked
+>    `pos − rewrite_pos ≤ 2·8 = 16` tokens **and** kept only the first half of
+>    the queries. The `imm. revised` / `later revised` columns are therefore
+>    the *legacy* metrics `legacy_immediate_revised` / `legacy_later_revised`
+>    in v2's `task.py`, which reproduces them exactly (tested). v2 reports
+>    an actual lag ≤ 8 metric, `rev_lag_le8`, together with its sample count.
+> 3. **Queries write to memory.** The MDN layer updates memory before it reads
+>    at every token. There is no query write-mask, so each `[k QUERY]` step
+>    writes too. That is the official read-after-update convention, and v2
+>    keeps it. The task is not a read-only probe.
+> 4. **TSS does not start at the native point.** At `M = γ = 0`, `T = h` the
+>    filter is `Y_t = 2R_t − R_{t−1}`. The native identity filter is
+>    `Y_t = R_t`. (§5, §9.5)
+> 5. **The Jury conditions certify the isolated filter** `z² − az + b`, not
+>    the complete memory feedback loop. The filter output drives `M`, `S`
+>    feeds back into the next `R`, and that loop's stability is not covered.
+>    (§4.1, §4.2)
+> 6. **TSS vs generalized does not isolate damping.** The two arms differ in
+>    `M`, `γ` *and* their starting point (generalized starts at
+>    `M = 0.025, γ = 1`). That comparison cannot say that damping rather than
+>    mass does the work. The `γ` argument in §8.4 is an analytic argument
+>    about the filter's frequency response, not a controlled result. (§8.3,
+>    §8.4, §10)
+> 7. **`gated` is the momentum-off ablation** (`μ = 0`) of the gated delta
+>    rule under the common frontend. It is not a reproduction of the
+>    published Gated DeltaNet model. Native beating it is consistent with the
+>    MDN paper's direction, but it does not calibrate against that paper.
+>    (§3.1, §8.3)
+> 8. The ≈62 min wall-clock (§7.5) is a historical 3090 measurement for the
+>    reduced mixer, not a timing for v2.
+
 # Part 2 — The Momentum DeltaNet bridge: protocol, equations, implementation, results
 
 *Part 1, the three S5 arms, is `docs/S5_THREE_ARM_REFERENCE.md` in
@@ -20,8 +73,11 @@ six-arm ladder on a synthetic 8×8 fast weight measured it on the write residual
 and found +7.53 pp on immediate revision. **Those two results differ in two
 variables at once** — architecture *and* placement — so neither transfers.
 
-This bridge holds architecture fixed at the real MDN and placement fixed at the
-drive, leaving one question: does the effect survive in a real architecture?
+This bridge was meant to hold architecture fixed at the real MDN and placement
+fixed at the drive, leaving one question: does the effect survive in a real
+architecture? **[corrected]** In v1 only the matrix recurrence was the
+official one; the layer around it was reduced (erratum 1), so v1 does not
+answer that question. v2 does.
 
 It answers "is the effect real", **not** "is this practical at scale" (§6).
 
@@ -112,7 +168,8 @@ term needs it divided back out.
 **Gated DeltaNet needs no second implementation.** The official `naive.py` says
 so itself — *"For GatedDeltaNet: p = alpha * Norm(k), mu = 0"*. It is the
 momentum rule with the carry switched off, which is why it costs zero extra
-code and serves as the calibration arm.
+code. **[corrected]** It is the momentum-off ablation under the common
+frontend, not a reproduction of the published GDN model (erratum 7).
 
 ---
 
@@ -159,9 +216,11 @@ difference is what `u` is:**
 | **S5, Part 1** | `Y_t = F s_{t-1} + G x_t`, `F = 1 + (T/h)(λ̄−1)` | `λ̄` enters `a₁, a₂`; prospective parameters and SSM mode share one characteristic polynomial |
 | **MDN, here** | `R_t`, the write residual | `a, b, c, d` depend on `(M, γ, T)` **only**; the gates never enter; memory recurrence untouched |
 
-That gate-independence is why the Jury conditions can be certified at a
-checkpoint, and why this arm is comparable in cost to a two-tap operator rather
-than harder.
+That gate-independence is why the Jury conditions **of the isolated filter**
+can be certified at a checkpoint, and why this arm is comparable in cost to a
+two-tap operator rather than harder. **[corrected]** They do not certify the
+complete memory feedback loop (filter → `M` → `S` → next `R`), whose
+stability depends on the gates (erratum 5).
 
 ### 4.2 Admissible set and the projection
 
@@ -233,8 +292,9 @@ Before the fix, 4000 steps moved `M` by 2e-4.
 
 **The cost of the fix, stated plainly:** generalized no longer starts at the
 native boundary. It starts at `GEN_M0 = 0.025, GEN_GAMMA0 = 1.0, GEN_T0 = h`,
-which is the S5 study's successful point. TSS and QHM still start exactly at
-their native points, because direct storage has no trap there. Three regression
+which is the S5 study's successful point. QHM still starts exactly at its
+native point (`ν = 1`). **[corrected]** TSS does **not**: at `M = γ = 0,
+T = h` its filter is `Y_t = 2R_t − R_{t−1}`, not the identity (erratum 4). Three regression
 tests cover this: the leaves move under optimization, TSS stays pinned at
 exactly zero, and projection leaves the coefficients Jury-stable from arbitrary
 negative starts.
@@ -269,7 +329,8 @@ PyTorch token loop, where autograd supplies the backward.
 
 **Consequence, and the honest limit of this study:** a Python per-token loop
 with retained activations bounds the model size and context. This is the
-correct *mathematics* in the official architecture at small scale, **not** a
+correct *recurrence* at small scale (**[corrected]** inside a reduced mixer,
+not the official architecture; erratum 1), **not** a
 fast implementation, and it says nothing about throughput or memory at 400M.
 Writing `chunk.py` kernels is the work that follows a positive go/no-go — and
 Nesterov is the arm that breaks first there, since moving the residual
@@ -317,7 +378,7 @@ token layout:  [k v] × n_pairs   [k v'] × n_revisions   [k QUERY] × n_queries
 | `overall` | all queries | recall |
 | `revised` | keys that were overwritten | revision |
 | `untouched` | written once, never touched | retention |
-| `immediate_revised` | revised, rewrite ≤ `IMMEDIATE_GAP = 8` tokens back | immediate revision |
+| `immediate_revised` | **[corrected]** revised, rewrite ≤ 16 tokens back **and** in the first half of the queries (erratum 2); v2 name `legacy_immediate_revised` | immediate revision |
 | `later_revised` | revised, rewrite further back | later revised |
 
 Production settings: `n_keys 24`, `n_pairs 8`, `n_revisions 6`, `n_queries 12`,
@@ -412,7 +473,7 @@ neighbours with it. The launcher refuses if seeds outnumber GPU tokens and
 exits non-zero if any child fails, so a partial wave cannot be read as a
 complete one.
 
-Wall clock: 4000 steps × six arms ≈ **62 min** on one RTX 3090; four seeds in
+Wall clock (historical, reduced mixer, not a v2 estimate): 4000 steps × six arms ≈ **62 min** on one RTX 3090; four seeds in
 parallel on four GPUs, so eight seeds is two hours.
 
 ---
@@ -423,6 +484,8 @@ parallel on four GPUs, so eight seeds is two hours.
 
 Mean over seeds of each seed's final-five-eval mean. "Escaped" counts seeds
 finishing above 5% (chance is 3.1%).
+
+Columns 2–3 are the legacy metrics (erratum 2). "Gated DeltaNet" is the `μ = 0` ablation (erratum 7).
 
 | arm | imm. revised | later revised | revised | untouched | overall | escaped |
 |---|---|---|---|---|---|---|
@@ -469,9 +532,9 @@ skipped rather than averaging it in.
 ### 8.3 What this establishes
 
 **The undamped arm never trains.** 0/8 seeds above chance; generalized beats it 8/8 at
-p = 0.0039 on *all five* metrics. This is the controlled comparison: same code
-path, same `T` initialization, the only difference being whether `M` and `γ` may
-leave zero.
+p = 0.0039 on *all five* metrics. Same code path and same `T` initialization.
+**[corrected]** The arms still differ in `M`, `γ` *and* their start point, so
+this does not isolate damping, or mass (erratum 6).
 
 **The law does not beat the baseline.** Native wins 5 of 8 seeds, and the
 mean +2.32 rides on two seeds where *native* failed to escape. Generalized −
@@ -483,8 +546,10 @@ Nesterov, mean difference −0.04.
 Eight seeds show that was the escape lottery. Recorded because it is the clearest
 available argument for why the second wave was worth an hour.
 
-**Calibration passed.** Gated DeltaNet is beaten by native at p = 0.0352, which
-is the direction the MDN paper reports.
+**Momentum-off ablation.** The `gated` arm (`μ = 0`) is beaten by native at
+p = 0.0352. **[corrected]** That is consistent with the direction the MDN paper
+reports, but it is an ablation under a common (reduced) frontend, not a
+calibration against the published GDN (erratum 7).
 
 ### 8.4 Why TSS fails, mechanistically
 
@@ -496,8 +561,9 @@ high-frequency response:
 | TSS (`M = γ = 0`), `T = 0.79–1.28` | high-pass | **2.3 – 4.5×** |
 | Generalized, `M = 0.05–0.47`, `γ = 0.9–1.9` | low-pass | **0.44 – 0.98×** |
 
-and **damping, not mass, does the work** — the same conclusion Part 1 reaches
-analytically, where at `λ̄ = 1` the S5 recurrence factors as
+and, **[corrected]** as an analytic argument rather than a controlled result
+(erratum 6), damping rather than mass is what removes the high-pass gain. That
+is the same conclusion Part 1 reaches analytically, where at `λ̄ = 1` the S5 recurrence factors as
 `(z−1)(z−(α+δ))` with `α+δ = (M+hT)/(M+hT+hγ)`, which equals 1 for *any* mass
 whenever `γ = 0`:
 
@@ -543,8 +609,8 @@ pretrained native checkpoint. If it recovers, the explanation holds.
    immediate revision. With five correlated metrics in play that pattern needs a
    declared primary before it is claimed.
 5. **Generalized does not start at native**, since a boundary start cannot train
-   (§5). TSS and QHM do. The arms therefore do not all begin identical to
-   baseline.
+   (§5). **[corrected]** Only QHM does; TSS starts at `Y = 2R − R_prev`
+   (erratum 4). The arms therefore do not all begin identical to baseline.
 6. **Tiny model, short context.** `d_model 128`, 2 layers, sequence length 52,
    because the token loop bounds it. Nothing here speaks to 400M or to long
    context.
@@ -562,15 +628,17 @@ pretrained native checkpoint. If it recovers, the explanation holds.
 Across Part 1 and Part 2, four settings: two architectures × two placements of
 the same coefficient map.
 
-* **Zero damping is unusable** (the arms are at `M = γ = 0`, but the binding
-  variable is `γ`). Non-finite on the first update in S5
+* **The `M = γ = 0` point is unusable.** **[corrected]** That `γ` rather than
+  `M` is the binding variable is an analytic argument, not isolated by these
+  runs (erratum 6). Non-finite on the first update in S5
   (companion roots 1.16–1.63 at `T = 0.05`); 0/8 seeds above chance in MDN, beaten
   8/8 at p = 0.0039.
 * **Finite mass and damping makes the law run**, and the learned regime is the
   predicted one in S5 — `|r_slow| ≈ 0.999`, `|r_fast| ≈ 0.05`, 55–62 of 64 modes,
   with `γ` rising away from the stability boundary.
 * **In neither architecture does it beat the baseline.** −1.00 pp against Native
-  S5 at 3/3 seeds; statistically indistinguishable from Native MDN at 8 seeds,
+  S5 at 3/3 seeds; statistically indistinguishable from the native rule (in the
+reduced v1 mixer, erratum 1) at 8 seeds,
   and from literal Nesterov.
 
 What mass and damping buy is a law that runs at all rather than one that

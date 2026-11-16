@@ -8,6 +8,19 @@ not match are listed and skipped, never silently averaged in.
 The outcome here is bimodal -- a seed either escapes the plateau or does not --
 so the headline test is the exact sign test, which assumes nothing about the
 distribution. Means are reported alongside, not instead.
+
+Mixer versions are never mixed. A run's version is
+`provenance.mixer_version`; files without it are v1 (reduced mixer). v1 files
+report their metrics under the v1 names, which are mapped onto the LEGACY
+metrics they actually computed (`immediate_revised` was not an eight-token
+window; see task.py):
+
+    v1 immediate_revised -> legacy_immediate_revised
+    v1 later_revised     -> legacy_later_revised
+
+    python -m prospective.aggregate                       # v2 wave
+    python -m prospective.aggregate --version v1-reduced-mixer \
+        '/Local/durso/mdn-bridge-runs/*-seed*/results.json'  # reproduce v1
 """
 
 import argparse
@@ -17,8 +30,28 @@ import math
 import os
 import statistics as st
 
-METRICS = ("immediate_revised", "later_revised", "revised", "untouched",
-           "overall")
+V2_METRICS = ("rev_lag_le8", "rev_lag_gt8", "revised", "untouched", "overall",
+              "legacy_immediate_revised", "legacy_later_revised")
+V1_METRICS = ("legacy_immediate_revised", "legacy_later_revised", "revised",
+              "untouched", "overall")
+V1 = "v1-reduced-mixer"
+V1_ALIASES = {"immediate_revised": "legacy_immediate_revised",
+              "later_revised": "legacy_later_revised"}
+
+
+def version_of(r):
+    return r.get("provenance", {}).get("mixer_version", V1)
+
+
+def normalise(r):
+    """Rename v1 metric keys to the legacy names, in place."""
+    if version_of(r) == V1:
+        for curve in r["curves"].values():
+            for c in curve:
+                for old, new in V1_ALIASES.items():
+                    if old in c:
+                        c[new] = c.pop(old)
+    return r
 #: a seed counts as having escaped if it clears this, well above 1/32 chance
 ESCAPE = 5.0
 
@@ -28,7 +61,7 @@ def sign_p(wins, n):
     return sum(math.comb(n, k) for k in range(wins, n + 1)) / (2.0 ** n)
 
 
-def load(paths, want):
+def load(paths, want, version):
     runs, skipped = {}, []
     for path in paths:
         try:
@@ -37,6 +70,10 @@ def load(paths, want):
             skipped.append((path, f"unreadable: {exc}"))
             continue
         cfg = r.get("config", {})
+        if version_of(r) != version:
+            skipped.append((path, f"mixer_version={version_of(r)!r}"))
+            continue
+        normalise(r)
         bad = [f"{k}={cfg.get(k)!r}!={v!r}" for k, v in want.items()
                if cfg.get(k) != v]
         if bad:
@@ -58,7 +95,8 @@ def tail_mean(curve, metric, tail):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("glob", nargs="?",
-                    default="/Local/durso/mdn-bridge-runs/*-seed*/results.json")
+                    default="/Local/durso/mdn-bridge-runs-v2/*-seed*/results.json")
+    ap.add_argument("--version", default="v2-official-mdn-mixer")
     ap.add_argument("--tail", type=int, default=5)
     ap.add_argument("--steps", type=int, default=4000)
     ap.add_argument("--n-keys", type=int, default=24)
@@ -67,7 +105,8 @@ def main():
     a = ap.parse_args()
 
     want = {"steps": a.steps, "n_keys": a.n_keys, "n_pairs": a.n_pairs}
-    runs, skipped = load(sorted(glob.glob(a.glob)), want)
+    runs, skipped = load(sorted(glob.glob(a.glob)), want, a.version)
+    METRICS = V1_METRICS if a.version == V1 else V2_METRICS
     if not runs:
         print("no matching runs")
         for p, why in skipped:
@@ -77,6 +116,7 @@ def main():
     seeds = sorted(runs)
     arms = runs[seeds[0]][1]["arms"]
     print(f"{len(seeds)} seeds: {seeds}")
+    print(f"mixer: {a.version}")
     print(f"config: steps={a.steps} n_keys={a.n_keys} n_pairs={a.n_pairs}, "
           f"mean of last {a.tail} evals")
     if skipped:
@@ -100,6 +140,9 @@ def main():
             esc = sum(1 for x in v if x == x and x > ESCAPE)
             print(f"{arm:>{w}}  " + "  ".join(f"{x:7.2f}" for x in v)
                   + f"  {st.fmean(v):7.2f}  {esc}/{len(v)}")
+        ns = [runs[s][1]["curves"][arms[0]][-1].get(f"n_{m}") for s in seeds]
+        if all(n is not None for n in ns):
+            print(f"{'n (final eval)':>{w}}  " + "  ".join(f"{n:7d}" for n in ns))
         print(f"\n  paired vs {a.ref}:")
         for arm in arms:
             if arm == a.ref:

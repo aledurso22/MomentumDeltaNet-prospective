@@ -1,23 +1,35 @@
 # Prospective write rules on Momentum DeltaNet
 
 Base: this repository at **c6e77fa261fb0c002fae1a14b6209a5b28d2edc9**
-(`HuuYuLong/MomentumDeltaNet`, ICML 2026). Branch `prospective-rules` is
-branched from that commit and changes nothing upstream.
+(`HuuYuLong/MomentumDeltaNet`, ICML 2026). Branch `prospective-rules` changes
+nothing under `flash-linear-attention/` or `flame/`.
 
-Plan: `docs/MDN_RECURRENT_BRIDGE_PLAN.md` on branch `mdn-recurrent-bridge` of
-`final-prospective-s5`.
+Reports: [`reports/v2_official_mixer.md`](reports/v2_official_mixer.md)
+(current) and [`reports/v1_reduced_mixer.md`](reports/v1_reduced_mixer.md)
+(superseded, with erratum; code at `8d39b8a`).
 
 | file | what |
 |---|---|
 | `coefficients.py` | the (M, gamma, T) -> (a, b, c, d) map, taken unchanged from the S5 study |
-| `rules.py` | the arms as recurrent references, line-for-line against `naive.py` |
-| `test_coefficients.py` | the map reproduces the S5 golden values to 1e-12 |
-| `test_rules.py` | every arm reproduces the official native reference at its native point |
+| `rules.py` | the six arms as recurrent references, line-for-line against `naive.py` |
+| `reference.py` | the `reference` backend: chunk_mode_rule's preprocessing + `rules.py` (no fla import) |
+| `mixer.py` | `ProspectiveMDN`: the official `MomentumDeltaNet` layer with a recurrent-backend hook |
+| `model.py` | shared small backbone around the mixer; `build()` gives identical shared init |
+| `task.py` | MQAR with revision; lag metric with counts; legacy v1 metrics |
+| `train.py` | six arms in lockstep, FP32, production config as defaults |
+| `profile_gpu.py` | measured per-arm time/memory and the per-seed wave estimate |
+| `layer_ref.py` | pure-PyTorch functional layer in any dtype: the FP64 reference for GPU checks |
+| `verify_gpu.sh` | gate before a wave: unit tests, integration (default + IEEE dots), profile; never trains |
+| `verify.sbatch` | the verification-only Slurm job (one RTX 4090; refuses other GPUs) |
+| `run_wave.sh`, `run_seed.sh`, `seed.sbatch` | launchers (output in `mdn-bridge-runs-v2`) |
+| `aggregate.py`, `summary.py`, `parse_log.py` | analysis; never mix mixer versions |
+| `test_coefficients.py`, `test_rules.py`, `test_task.py` | CPU tests |
+| `test_model_cpu.py`, `cpu_stub/` | model-level CPU plumbing tests with the real layer source and CPU stand-ins for Triton modules |
+| `test_integration.py` | GPU tests against the official layer and chunk kernel, errors vs FP64 to JSON |
 
 `tss` and `generalized` are the SAME code path and the SAME equation: TSS is
-`M = gamma = 0`. Verified in the S5 repository that `zucchet_coefficients`
-equals `generalized_coefficients(mass=0, gamma=0)` to 8.9e-16, so the arm that
-failed S5 training is the zero-mass face of the arm that trained.
+`M = gamma = 0`. Its start point `T = h` gives the filter `Y = 2R - R_prev`,
+not the identity.
 
-Not done here: `chunk.py`. This is the recurrent path only, by design -- see
-section 5 of the plan.
+Not done: chunked/cached execution (whole-sequence only), and a `chunk.py`
+kernel for the modified rules.

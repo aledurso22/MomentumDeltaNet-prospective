@@ -20,6 +20,17 @@ Each arm changes exactly ONE of these lines:
 
 `tss` and `generalized` are the SAME code path with different parameters; see
 `prospective/coefficients.py` for the provenance of the coefficient map.
+
+Whole-sequence execution only for the filter arms. Their filter history
+(y_(t-1), y_(t-2), R_(t-1)) is NOT part of the returned state, so a chunked or
+cached continuation would silently restart the filter from zero. Passing an
+initial state or asking for a final state with a filter arm therefore raises.
+
+Nesterov's lookahead key. The residual is evaluated at
+L_t = alpha_t S_(t-1) - beta_t mu_t M_(t-1), read by the UNdecayed key
+n_t = Norm(k_t). Callers that build p = alpha Norm(k) should pass `n`
+explicitly; the fallback n = p / alpha is the same quantity but divides by a
+gate that can underflow to zero in float32 when log_alpha < ~-87.
 """
 
 import torch
@@ -38,9 +49,14 @@ NO_MOMENTUM_ARMS = ("gated",)
 def recurrent_ref(arm, q, k, v, log_alpha, log_mu, p, beta, eta, scale=None,
                   mass=None, gamma=None, response=None, nu=None,
                   h=H_TOKEN, initial_S=None, initial_M=None,
-                  output_final_state=False):
+                  output_final_state=False, n=None):
     if arm not in ARMS:
         raise ValueError(f"{arm!r} is not an arm of this module")
+    if arm in FILTER_ARMS and (initial_S is not None or initial_M is not None
+                               or output_final_state):
+        raise NotImplementedError(
+            f"{arm!r} is whole-sequence only: its filter history is not carried "
+            "across calls, so chunked/cached execution would reset it")
     q, k, v, p, log_alpha, log_mu, beta, eta = (
         x.to(torch.float32) if x.dtype != torch.float64 else x
         for x in (q, k, v, p, log_alpha, log_mu, beta, eta))
@@ -58,6 +74,8 @@ def recurrent_ref(arm, q, k, v, log_alpha, log_mu, p, beta, eta, scale=None,
                       x.to(v.dtype) for x in (a, b, c, d))
     if arm == "qhm":
         nu = nu.to(v.dtype) if torch.is_tensor(nu) else nu
+    if arm == "nesterov" and n is not None:
+        n = n.to(v.dtype)
 
     S_prev = v.new_zeros(B, H, DK, DV) if initial_S is None else initial_S
     M_prev = v.new_zeros(B, H, DK, DV) if initial_M is None else initial_M
@@ -75,8 +93,9 @@ def recurrent_ref(arm, q, k, v, log_alpha, log_mu, p, beta, eta, scale=None,
 
         if arm == "nesterov":
             # residual at L_t = alpha_t S_(t-1) - beta_t mu_t M_(t-1); alpha is
-            # already inside p_t, so the correction carries p_t / alpha_t
-            n_t = (p_t / alpha_i.view(B, H, 1)).unsqueeze(-2)
+            # already inside p_t, so the correction term is read by n_t
+            n_t = (n[:, i] if n is not None
+                   else p_t / alpha_i.view(B, H, 1)).unsqueeze(-2)
             w_t = -(v_t.unsqueeze(-2) - p_t.unsqueeze(-2) @ S_prev
                     + (beta_i * mu_i) * (n_t @ M_prev))
         else:
