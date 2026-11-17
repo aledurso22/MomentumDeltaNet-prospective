@@ -178,6 +178,20 @@ now include the three pilot arms. It adds:
 - a few updates of the exact pilot spec with a checkpoint and a resume: the
   batch stream must be identical; parameter differences are recorded.
 
+### GPU status (RTX 3090, commit `83b355b9a9`)
+
+- **Default (TF32) integration:** 53 of 53 tests pass, with every tensor
+  finite.
+- **IEEE integration:** 51 of 53 pass. The two failures are
+  `test_official_chunk_layer_vs_fp64[52]` and `[128]`:
+  - outputs and most gradients are about 5e-6;
+  - the A_log and dt_bias gradients reach about 6e-3, and log_factor
+    1.7e-2.
+
+  Standalone recurrence and reference-backend comparisons pass.
+- **Diagnosis:** `diag_chunk_gates.py` is pending. Verification is not
+  declared passed until it has run.
+
 ## 4. Pilot protocol (`experiment_pilot.py`)
 
 - **Model:** width 128, 2 layers, 4 heads, dk 32, dv 64, batch 16, FP32

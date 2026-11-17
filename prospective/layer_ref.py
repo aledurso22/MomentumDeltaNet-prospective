@@ -39,8 +39,9 @@ def _conv_silu(P, name, x):
     return F.silu(y.transpose(1, 2))
 
 
-def mixer_forward_ref(m, h, P):
-    """`m` supplies configuration (arm, dims, eps, tau); `P` the parameters."""
+def frontend_ref(m, h, P):
+    """The frontend outputs (q, k before l2norm, after the output correction;
+    v; the gates), as `ProspectiveMDN.frontend` produces them."""
     B, T, _ = h.shape
     H, dk, dv = m.num_heads, m.head_k_dim, m.head_v_dim
     assert m.use_short_conv and m.use_gate and m.use_output_correction
@@ -62,18 +63,32 @@ def mixer_forward_ref(m, h, P):
     if m.min_log_mu is not None:
         log_mu = log_mu.clamp_min(m.min_log_mu)
     q = q - P["D_log"].exp()[None, None, :, None] * k
+    return dict(q=q, k=k, v=v, log_alpha=log_alpha, log_mu=log_mu, beta=beta,
+                eta=eta)
 
-    f = dict(q=q, k=k, v=v, log_alpha=log_alpha, log_mu=log_mu, beta=beta,
-             eta=eta)
+
+def leaves_ref(P):
     leaves = {}
     for name, key in (("fil_M", "mass"), ("fil_gamma", "gamma"),
                       ("fil_T", "response"), ("nu", "nu"),
                       ("inertia_A", "A"), ("inertia_r", "r")):
         if name in P:
             leaves[key] = P[name]
-    o = reference_recurrence(m.arm, f, leaves, getattr(m, "writer_cfg", None))
+    return leaves
 
+
+def readout_ref(m, o, h, P):
+    """Gated RMS norm and o_proj on the recurrence output o [B, T, H, dv]."""
+    B, T, _ = h.shape
+    H, dv = m.num_heads, m.head_v_dim
     g = _lin(P, "g_proj", h).view(B, T, H, dv)
     o = o * torch.rsqrt(o.pow(2).mean(-1, keepdim=True) + m.o_norm.eps)
     o = o * P["o_norm.weight"] * torch.sigmoid(g)
     return _lin(P, "o_proj", o.reshape(B, T, H * dv))
+
+
+def mixer_forward_ref(m, h, P):
+    """`m` supplies configuration (arm, dims, eps, tau); `P` the parameters."""
+    f = frontend_ref(m, h, P)
+    o = reference_recurrence(m.arm, f, leaves_ref(P), getattr(m, "writer_cfg", None))
+    return readout_ref(m, o, h, P)

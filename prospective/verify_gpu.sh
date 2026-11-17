@@ -37,7 +37,12 @@ nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total,pci.bus_id \
   lscpu | grep -E "Model name|^CPU\(s\)" || true; } > "$OUT/hardware.txt"
 cat "$OUT/hardware.txt"
 export PYTHONPATH="$REPO/flash-linear-attention${PYTHONPATH:+:$PYTHONPATH}"
-CACHE_ROOT="${TMPDIR:-/tmp}/triton-cache-$$"
+# persistent Triton cache, one directory per commit and precision mode
+# (shared with diag_chunk_gates.sh); never deleted, so reruns at the same
+# commit do not recompile. FLA_CACHE_RESULTS=1 also keeps autotune choices.
+CACHE_ROOT="${TRITON_CACHE_ROOT:-$HOME/.cache/mdn-triton}/$(git rev-parse --short=10 HEAD)"
+export FLA_CACHE_RESULTS="${FLA_CACHE_RESULTS:-1}"
+mkdir -p "$CACHE_ROOT/default" "$CACHE_ROOT/ieee"
 
 {
   echo "commit $(git rev-parse HEAD)"
@@ -54,6 +59,7 @@ except Exception:
 print("gpu", torch.cuda.get_device_name(0), "cc", torch.cuda.get_device_capability(0))
 EOF
   nvidia-smi --query-gpu=name,driver_version,memory.total --format=csv,noheader
+  echo "triton cache root $CACHE_ROOT (persistent); FLA_CACHE_RESULTS=$FLA_CACHE_RESULTS"
 } 2>&1 | tee "$OUT/env.txt"
 
 stage() {   # stage <name> <command...>; never aborts the script
@@ -78,9 +84,8 @@ stage integration_default env TRITON_CACHE_DIR="$CACHE_ROOT/default" \
   python -m pytest -s -q -p no:cacheprovider prospective/test_integration.py
 stage integration_ieee env TRITON_CACHE_DIR="$CACHE_ROOT/ieee" TRITON_F32_DEFAULT=ieee \
   python -m pytest -s -q -p no:cacheprovider prospective/test_integration.py
-stage profile python -u -m prospective.profile_gpu "${PILOT_FLAGS[@]}" \
+stage profile env TRITON_CACHE_DIR="$CACHE_ROOT/default" python -u -m prospective.profile_gpu "${PILOT_FLAGS[@]}" \
   --budget-minutes 60 --out "$OUT/profile.json"
-rm -rf "$CACHE_ROOT"
 echo "artefacts in $OUT"
 cat "$OUT/status.txt"
 ! grep -qv ' 0$' "$OUT/status.txt"
