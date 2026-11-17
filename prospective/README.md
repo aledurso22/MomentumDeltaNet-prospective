@@ -2,9 +2,19 @@
 
 Base: this repository at **c6e77fa261fb0c002fae1a14b6209a5b28d2edc9**
 (`HuuYuLong/MomentumDeltaNet`, ICML 2026). Branch `prospective-rules` changes
-nothing under `flame/`, and under `flash-linear-attention/` only one upstream
-import typo in `fla/__init__.py` (`KimiDeltaAhattention` ->
-`KimiDeltaAttention`), without which `import fla` fails.
+nothing under `flame/`. Under `flash-linear-attention/` it makes only these
+upstream fixes, each documented in its commit and in the code:
+
+* `import fla` failed: a typo (`KimiDeltaAhattention`), an import of the
+  unshipped `generalized_delta_rule`, a module-level import of the unshipped
+  `fla.ops.gla` (now inside the KDA functions that use it), and the
+  undefined `FLA_CACHE_RESULTS` in `fla/utils.py`;
+* `EXTRA_NUM_STAGES`: on GPUs with less shared memory than an A100 (RTX
+  3090/4090) the MDN chunk kernels' autotune lists also offer
+  `num_stages=1`, because no listed config fitted in IEEE fp32 mode;
+* `wy_fast.py::prepare_uyz_repr_bwd_kernel`: the logcumsumexp backward did
+  not mask the padded rows of a partial last chunk, and produced NaN
+  gradients for log_alpha, log_mu and beta when exp overflowed there.
 
 Reports: [`reports/v4_geometry_pilot.md`](reports/v4_geometry_pilot.md)
 (current: geometry and learned-inertia training pilot, GPU results pending),

@@ -496,7 +496,13 @@ def prepare_uyz_repr_bwd_kernel(
     # # 3)d_log_c[j] = sum_t g[t] * w[t, j]
     i = tl.arange(0, BT)[:, None]
     j = tl.arange(0, BT)[None, :]
-    mask = i >= j
+    # Rows and columns past the end of the sequence (the padding of a partial
+    # last chunk, loaded as 0) must be excluded, as in mask_tril above. For a
+    # padded row log_ct = 0, so its exponent is log_c_before[j] itself, which
+    # exceeds the fp32 exp range (88.7) when the in-chunk decay is strong;
+    # Inf * d_log_ct(=0) then put NaN into every valid column. Valid entries
+    # are unchanged (padded rows contribute exactly 0 in exact arithmetic).
+    mask = (i >= j) & (m_t[:, None] & m_t[None, :])
     
     log_expo = tl.where(mask, b_log_c_before[None, :] - b_log_ct[:, None] , NEG_INF) # [BT, BT]
     col_max = tl.maximum(tl.max(log_expo, axis=1), 0.)

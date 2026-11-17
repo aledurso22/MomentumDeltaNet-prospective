@@ -26,6 +26,11 @@ absolute error, the reference norm, and the norm-relative error
 ||x - x64|| / ||x64|| for outputs, input gradients and every parameter
 gradient. Results go to $VERIFY_OUT/integration_<mode>.json.
 
+Finiteness: every compared tensor (output, input gradient, parameter
+gradient) and its FP64 reference must be finite everywhere, in BOTH
+precision modes and whether or not the comparison is graded. A NaN or Inf
+fails the test; non-finite counts are written to the JSON report.
+
 Pass criterion, declared before any GPU run: norm-relative error <= 1e-4 per
 tensor. It is applied to the FP32 reference backend always, and to the
 official chunk backend only when `all_ieee`. With TF32 dots there is no
@@ -88,16 +93,27 @@ def err(x, ref):
     nr = ref.norm().item()
     return dict(max_abs=d.abs().max().item(), ref_norm=nr,
                 norm_rel=(d.norm().item() / nr) if nr > 0 else
-                (0.0 if d.norm().item() == 0 else float("inf")))
+                (0.0 if d.norm().item() == 0 else float("inf")),
+                nonfinite=int((~torch.isfinite(x)).sum().item()),
+                nonfinite_ref=int((~torch.isfinite(ref)).sum().item()),
+                numel=x.numel())
 
 
 def record(name, rows, graded):
+    """Print and store a comparison. EVERY comparison, graded or not,
+    requires the measured tensor and its FP64 reference to be finite
+    everywhere; only the relative-error tolerance depends on `graded`."""
     REPORT["comparisons"][name] = dict(graded=graded, rows=rows)
-    print(f"\n  {name}  ({'graded' if graded else 'recorded only'})")
-    print(f"    {'tensor':>28} {'max_abs':>10} {'||ref||':>10} {'norm_rel':>10}")
+    print(f"\n  {name}  ({'graded' if graded else 'recorded only'};"
+          " finiteness always required)")
+    print(f"    {'tensor':>28} {'max_abs':>10} {'||ref||':>10} {'norm_rel':>10}"
+          f" {'nonfinite':>12}")
     for n, e in rows.items():
         print(f"    {n:>28} {e['max_abs']:10.2e} {e['ref_norm']:10.2e} "
-              f"{e['norm_rel']:10.2e}")
+              f"{e['norm_rel']:10.2e} {e['nonfinite']:5d}/{e['numel']:<6d}")
+    nonfinite = {n: (e["nonfinite"], e["nonfinite_ref"]) for n, e in rows.items()
+                 if e["nonfinite"] or e["nonfinite_ref"]}
+    assert not nonfinite, f"non-finite (measured, reference) counts: {nonfinite}"
     if graded:
         bad = {n: e["norm_rel"] for n, e in rows.items()
                if not e["norm_rel"] <= TOL}
@@ -219,8 +235,15 @@ def test_frontend_copy_is_bitwise_official():
     h3 = h1.detach().clone().requires_grad_(True)
     o3 = MomentumDeltaNet.forward(m, h3)[0]
     g3 = torch.autograd.grad(o3.sum(), [h3] + list(m.parameters()))
-    assert torch.equal(o1, o2)
     names = ["input"] + [n for n, _ in m.named_parameters()]
+    # finiteness first: NaN would make every comparison below vacuous
+    nonfinite = {f"{tag}:{n}": int((~torch.isfinite(t)).sum())
+                 for tag, gs in (("ours", g1), ("official", g2), ("official_rerun", g3))
+                 for n, t in zip(names, gs) if not torch.isfinite(t).all()}
+    nonfinite.update({f"output{i}": int((~torch.isfinite(o)).sum())
+                      for i, o in enumerate((o1, o2, o3)) if not torch.isfinite(o).all()})
+    assert not nonfinite, nonfinite
+    assert torch.equal(o1, o2)
     diff = {n: (a - b).abs().max().item() for n, a, b in zip(names, g1, g2)}
     floor = {n: (a - b).abs().max().item() for n, a, b in zip(names, g2, g3)}
     REPORT["comparisons"]["frontend_copy_grad_max_abs"] = dict(
@@ -302,6 +325,37 @@ def test_recurrence_kernel_vs_fp64(T):
         rows_c["d/d " + n] = err(c, t)
     record(f"recurrence reference FP32 vs FP64, T={T}", rows_r, graded=True)
     record(f"recurrence chunk FP32 vs FP64, T={T}", rows_c, graded=ALL_IEEE)
+
+
+@pytest.mark.parametrize("T", [52, 116])
+def test_chunk_gate_gradients_finite_with_partial_last_chunk(T):
+    """Regression for the logcumsumexp backward in prepare_uyz_repr_bwd_kernel
+    (wy_fast.py): padded rows of a partial last chunk were not masked, and
+    exp(log_c_before) overflowed there whenever the in-chunk
+    log_c = log(beta + 1e-6) + cumsum(log_mu - log_alpha) exceeded 88.72,
+    giving NaN d/d log_alpha, log_mu, beta. The precondition (overflow
+    regime reached) is asserted, so the test cannot pass vacuously."""
+    m = layer("native", "official_chunk")
+    with torch.no_grad():
+        f = m.frontend(hidden(4, T, seed=300 + T))
+    la, lm, be = f["log_alpha"], f["log_mu"], f["beta"]
+    last = slice((T // 64) * 64, T)
+    logc = torch.log(be[:, last] + 1e-6) + torch.cumsum(lm[:, last] - la[:, last], 1)
+    REPORT["comparisons"][f"partial chunk T={T}: max in-chunk log_c"] = logc.max().item()
+    assert T % 64 != 0 and logc.max().item() > 88.72, "overflow regime not reached"
+    fc = {k: v.detach().clone().requires_grad_(True) for k, v in f.items()}
+    f64 = {k: v.detach().double().requires_grad_(True) for k, v in f.items()}
+    o_c = m.backend_official_chunk(fc)
+    o_64 = reference_recurrence("native", f64, {})
+    g = torch.randn_like(o_c)
+    gc = torch.autograd.grad(o_c, list(fc.values()), g, allow_unused=True)
+    g64 = torch.autograd.grad(o_64, list(f64.values()), g.double())
+    rows = {"output": err(o_c, o_64)}
+    for n, c, t in zip(f, gc, g64):
+        assert c is not None, n
+        rows["d/d " + n] = err(c, t)
+    record(f"recurrence chunk FP32 vs FP64, partial last chunk, T={T}", rows,
+           graded=ALL_IEEE)
 
 
 # ------------------------------------------ arm-boundary identities, in layer
@@ -500,4 +554,7 @@ def test_pilot_spec_trains_checkpoints_and_resumes_on_gpu(tmp_path):
                       for n, t in sd.items()) for arm, sd in ca["models"].items()}
     REPORT["comparisons"]["pilot resume vs uninterrupted, max |param diff|"] = diffs
     print("\n  resume vs uninterrupted, max |param diff|:", diffs)
+    for c in (ca, cb):
+        for arm, sd in c["models"].items():
+            assert all(torch.isfinite(t).all() for t in sd.values()), arm
     assert "inertia" in a and set(a["inertia"]) == {PILOT_MOTION}
