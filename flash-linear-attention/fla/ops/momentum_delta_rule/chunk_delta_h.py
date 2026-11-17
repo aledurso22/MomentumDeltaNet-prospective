@@ -9,7 +9,7 @@ import triton.language as tl
 
 from fla.ops.utils import prepare_chunk_indices, prepare_chunk_offsets
 from fla.ops.utils.op import exp
-from fla.utils import IS_NVIDIA_HOPPER, USE_CUDA_GRAPH, autotune_cache_kwargs, check_shared_mem
+from fla.utils import EXTRA_NUM_STAGES, IS_NVIDIA_HOPPER, USE_CUDA_GRAPH, autotune_cache_kwargs, check_shared_mem
 
 BKV_LIST = [64, 128] if check_shared_mem() else [32, 64]
 NUM_WARPS = [2, 4] if IS_NVIDIA_HOPPER else [2, 4, 8]
@@ -30,7 +30,7 @@ NUM_WARPS = [2, 4] if IS_NVIDIA_HOPPER else [2, 4, 8]
         triton.Config({'BV': BV}, num_warps=warps, num_stages=stages)
         for BV in [16, 32, 64]
         for warps in [2, 4]
-        for stages in [2, 3,]
+        for stages in [2, 3,] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT'],
     use_cuda_graph=USE_CUDA_GRAPH,
@@ -319,7 +319,7 @@ def chunk_mode_rule_fwd_kernel_inter_qh_blockdim64(
         triton.Config({'BV': BV}, num_warps=warps, num_stages=stages)
         for BV in [16, 32, 64]
         for warps in [2, 4]
-        for stages in [2, 3]
+        for stages in [2, 3] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT', 'BV',
     #  'USE_G'
@@ -660,7 +660,7 @@ def chunk_mode_rule_bwd_kernel_dhu_blockdim64(
         triton.Config({'BV': BV}, num_warps=warps, num_stages=stages)
         for BV in [32, 64]
         for warps in [2, 4]
-        for stages in [2, 3, 4]
+        for stages in [2, 3, 4] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT'],
     use_cuda_graph=USE_CUDA_GRAPH,

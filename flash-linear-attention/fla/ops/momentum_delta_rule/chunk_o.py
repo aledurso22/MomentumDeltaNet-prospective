@@ -9,7 +9,7 @@ import triton.language as tl
 
 from fla.ops.utils import prepare_chunk_indices, prepare_chunk_offsets
 from fla.ops.utils.op import exp
-from fla.utils import IS_NVIDIA_HOPPER, autotune_cache_kwargs, check_shared_mem
+from fla.utils import EXTRA_NUM_STAGES, IS_NVIDIA_HOPPER, autotune_cache_kwargs, check_shared_mem
 
 BKV_LIST = [64, 128] if check_shared_mem() else [32, 64]
 NUM_WARPS = [2, 4] if IS_NVIDIA_HOPPER else [2, 4, 8]
@@ -23,7 +23,7 @@ NUM_WARPS = [2, 4] if IS_NVIDIA_HOPPER else [2, 4, 8]
         triton.Config({'BK': BKV, 'BV': BKV}, num_warps=warps, num_stages=stages)
         for BKV in [32, 64]
         for warps in [2, 4]
-        for stages in [2, 3, 4]
+        for stages in [2, 3, 4] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT'],
     **autotune_cache_kwargs,
@@ -99,7 +99,7 @@ def chunk_mode_rule_fwd_kernel_o(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in NUM_WARPS
-        for num_stages in [2, 3, 4,]
+        for num_stages in [2, 3, 4,] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT', 'BK', 'BV',
      ],
@@ -383,7 +383,7 @@ def chunk_mode_rule_bwd_kernel_dqk(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in  [2, 4]
-        for num_stages in [2, 3, 4,]
+        for num_stages in [2, 3, 4,] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT', 'BK', 'BV'],
     **autotune_cache_kwargs,
@@ -467,7 +467,7 @@ def chunk_mode_rule_bwd_kernel_dbyz(
     configs=[
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in NUM_WARPS
-        for num_stages in [ 2, 3, 4]
+        for num_stages in [ 2, 3, 4] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT', 'BK', 'BV',
     #  'USE_G'

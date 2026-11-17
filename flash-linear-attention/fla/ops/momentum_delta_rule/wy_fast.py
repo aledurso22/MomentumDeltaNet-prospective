@@ -10,7 +10,7 @@ import triton.language as tl
 
 from fla.ops.utils import prepare_chunk_indices
 from fla.ops.utils.op import exp
-from fla.utils import autotune_cache_kwargs, check_shared_mem, is_tf32_supported
+from fla.utils import EXTRA_NUM_STAGES, autotune_cache_kwargs, check_shared_mem, is_tf32_supported
 
 NUM_WARPS = [2, 4, 8] 
 NUM_WARPS = [2, 4]
@@ -23,7 +23,7 @@ NUM_WARPS = [2, 4]
         triton.Config({'BK': BK}, num_warps=num_warps, num_stages=num_stages)
         for BK in [16, 32, 64]
         for num_warps in [2, 4, 8]
-        for num_stages in [2, 3, 4]
+        for num_stages in [2, 3, 4] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'BT', 'IS_VARLEN' ],
     **autotune_cache_kwargs,
@@ -201,7 +201,7 @@ def chunk_scaled_dot_mode_rule_pkt_fwd(
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         for num_warps in [2, 4]
         # for num_warps in NUM_WARPS
-        for num_stages in [2, 3, 4, 5]
+        for num_stages in [2, 3, 4, 5] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT', 'BK', 'BV', 'IS_VARLEN'],
     **autotune_cache_kwargs,
@@ -532,7 +532,7 @@ def prepare_uyz_repr_bwd_kernel(
         triton.Config({}, num_warps=num_warps, num_stages=num_stages)
         # for num_warps in [2, 4, 8]
         for num_warps in NUM_WARPS
-        for num_stages in [ 2, 3, 4]
+        for num_stages in [ 2, 3, 4] + EXTRA_NUM_STAGES
     ],
     key=['H', 'K', 'V', 'BT', 'BK', 'BV', 'IS_VARLEN'],
     **autotune_cache_kwargs,

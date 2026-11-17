@@ -466,6 +466,17 @@ def check_shared_mem(arch: str = "none", tensor_idx: int = 0) -> bool:
         return False
 
 
+# GPUs with less shared memory per block than A100 (e.g. RTX 3090 / 4090,
+# 101376 B) cannot fit every pipelined config of the momentum-delta-rule
+# kernels once their fp32 dots run as IEEE fp32 (TRITON_F32_DEFAULT=ieee):
+# chunk_mode_rule_fwd_kernel_inter_qh_blockdim64 needed 103428 B with 2
+# stages on an RTX 3090. There, the autotune lists ALSO offer unpipelined
+# (num_stages=1) configs. num_stages only changes software pipelining of
+# loads, not the arithmetic; every existing config is kept, and larger GPUs
+# see their lists unchanged.
+EXTRA_NUM_STAGES = [] if check_shared_mem("ampere") else [1]
+
+
 if check_pytorch_version('2.4'):
     device = 'cuda' if device == 'cpu' else device
     autocast_custom_fwd = functools.partial(torch.amp.custom_fwd, device_type=device)

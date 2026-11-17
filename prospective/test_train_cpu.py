@@ -90,3 +90,26 @@ def test_non_finite_update_is_not_applied():
     for n, p in m.named_parameters():
         assert torch.equal(p, before[n]) or (torch.isnan(p) == torch.isnan(before[n])).all()
     assert not opt.state                                  # no AdamW step taken
+
+
+def test_rng_state_is_restored_as_a_cpu_byte_tensor():
+    """The resume path must hand torch.Generator.set_state a CPU uint8
+    tensor whatever device the checkpoint tensors were mapped to (on GPU,
+    map_location=cuda moved it to CUDA and set_state raised)."""
+    from prospective.train import cpu_rng_state
+    g = torch.Generator().manual_seed(3)
+    st = g.get_state()
+    torch.rand(5, generator=g)
+    g.set_state(cpu_rng_state(st.clone()))
+    h = torch.Generator().manual_seed(3)
+    assert torch.equal(torch.rand(5, generator=g), torch.rand(5, generator=h))
+    with pytest.raises(TypeError):
+        cpu_rng_state(st.float())
+
+
+def test_resume_loads_the_checkpoint_on_the_cpu():
+    import inspect
+    from prospective import train
+    src = inspect.getsource(train.run)
+    assert 'map_location="cpu"' in src and "map_location=dev" not in src
+    assert "gen.set_state(cpu_rng_state(" in src

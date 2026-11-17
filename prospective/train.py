@@ -132,6 +132,17 @@ def fingerprint(args, inst):
     return json.dumps(dict(cfg=cfg, inst=inst), sort_keys=True, default=str)
 
 
+def cpu_rng_state(x):
+    """A saved torch.Generator state as set_state needs it: a CPU uint8
+    tensor. The batch generator is the only RNG state the run carries (the
+    eval set is rebuilt from the seed; nothing draws from torch's global or
+    CUDA RNG after model construction)."""
+    x = torch.as_tensor(x).detach().to("cpu")
+    if x.dtype != torch.uint8:
+        raise TypeError(f"RNG state must be uint8, got {x.dtype}")
+    return x.contiguous()
+
+
 def save_checkpoint(path, state):
     """Atomic: write next to the target, then rename over it."""
     tmp = path + ".tmp"
@@ -183,13 +194,16 @@ def run(args):
     if ckpt:
         os.makedirs(os.path.dirname(os.path.abspath(ckpt)), exist_ok=True)
     if args.resume and ckpt and os.path.exists(ckpt):
-        st = torch.load(ckpt, map_location=dev, weights_only=False)
+        # loaded on the CPU: load_state_dict copies model and optimiser
+        # tensors onto their parameters' device, and RNG states must stay
+        # CPU byte tensors (torch.Generator.set_state rejects CUDA tensors)
+        st = torch.load(ckpt, map_location="cpu", weights_only=False)
         if st["fingerprint"] != fp:
             raise SystemExit(f"refusing to resume from {ckpt}: configuration differs")
         for a in arms:
             models[a].load_state_dict(st["models"][a])
             opts[a].load_state_dict(st["opts"][a])
-        gen.set_state(st["gen"])
+        gen.set_state(cpu_rng_state(st["gen"]))
         curves, unused, failed = st["curves"], st["unused"], st["failed"]
         start, wall_before = st["step"] + 1, st["wall_seconds"]
         segments = st["segments"]
@@ -245,7 +259,7 @@ def run(args):
                 fingerprint=fp, step=step, repo_sha=git_sha(REPO),
                 models={a: models[a].state_dict() for a in arms},
                 opts={a: opts[a].state_dict() for a in arms},
-                gen=gen.get_state(), curves=curves, unused=unused,
+                gen=cpu_rng_state(gen.get_state()), curves=curves, unused=unused,
                 failed=failed, segments=segments,
                 wall_seconds=wall_before + time.time() - t0))
 
