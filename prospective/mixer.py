@@ -43,12 +43,15 @@ from fla.layers.momentum_deltanet import MomentumDeltaNet
 from fla.ops.momentum_delta_rule import chunk_mode_rule
 
 from .coefficients import GEN_GAMMA0, GEN_M0, GEN_T0, TSS_T0
+from .projection import (INERTIA_A0, INERTIA_R0, MOTION_ARMS,
+                         PROJECTION_ARMS)
 from .reference import reference_recurrence
 from .rules import ARMS, FILTER_ARMS
 from .writers import REFERENCE_CFG, WRITER_ARMS
 
-#: every arm the mixer accepts: the six v2 rules and the three v3 writers
-ALL_ARMS = ARMS + WRITER_ARMS
+#: every arm the mixer accepts: the six v2 rules, the three v3 writers and
+#: the three projection writers of the geometry/inertia pilot
+ALL_ARMS = ARMS + WRITER_ARMS + PROJECTION_ARMS
 #: official parameters that ONLY the MDN gates use. The writers keep them
 #: (so shared init is identical across arms) but never read them; they get
 #: no gradient and AdamW leaves them at their initial values.
@@ -62,7 +65,7 @@ MOMENTUM_GATE_PARAMS = ("m_proj.weight", "Mu_log", "mu_bias")
 def unused_by_design(arm):
     """Official parameters an arm keeps (for identical shared init) but never
     reads, so they get no gradient."""
-    if arm in WRITER_ARMS:
+    if arm in WRITER_ARMS or arm in PROJECTION_ARMS:
         return NATIVE_GATE_PARAMS
     if arm == "gated":
         return MOMENTUM_GATE_PARAMS
@@ -117,6 +120,10 @@ class ProspectiveMDN(MomentumDeltaNet):
                                           requires_grad=gen)
         if arm == "qhm":
             self.nu = nn.Parameter(torch.full((), QHM_NU0))
+        if arm in MOTION_ARMS:
+            # outer-trained, one per head; constant over the tokens of a pass
+            self.inertia_A = nn.Parameter(torch.full((num_heads,), INERTIA_A0))
+            self.inertia_r = nn.Parameter(torch.full((num_heads,), INERTIA_R0))
 
     @torch.no_grad()
     def official_model_init_(self):
@@ -203,6 +210,8 @@ class ProspectiveMDN(MomentumDeltaNet):
                         response=self.fil_T)
         if self.arm == "qhm":
             return dict(nu=self.nu)
+        if self.arm in MOTION_ARMS:
+            return dict(A=self.inertia_A, r=self.inertia_r)
         return {}
 
     def backend_reference(self, f):

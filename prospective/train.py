@@ -5,6 +5,12 @@ from a shared-seed backbone (see `model.build`). Arms are stepped in lockstep
 inside one loop, so a difference between two arms cannot come from data
 order, initialisation or schedule.
 
+Checkpointing: `--ckpt-every N` writes models, optimisers, the batch
+generator state, curves and failures atomically; `--resume` continues from
+it (the configuration must match) and gives the same batches in the same
+order as an uninterrupted run. An arm whose gradient norm is non-finite is
+recorded in `failed` and not updated again.
+
 Precision: FP32 throughout, no autocast, TF32 disabled for torch matmuls and
 cuDNN. The flags are recorded in `provenance`.
 
@@ -33,13 +39,15 @@ import time
 import torch
 import torch.nn.functional as F
 
-from .model import ARM_LEAVES, MODEL_DEFAULTS, build, unused_parameters
+from .model import (ARM_LEAVES, MODEL_DEFAULTS, build, make_optimizer,
+                    unused_parameters)
 from .rules import ARMS
 from .task import (HELDOUT, IGNORE, METRICS, PRODUCTION_TASK, hits,
                    make_batch, make_batch_heldout, primary_score)
 
 #: written into every results.json; aggregate.py refuses to mix versions
 MIXER_VERSION = "v2-official-mdn-mixer"
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 
 def git_sha(path):
@@ -115,6 +123,36 @@ def leaves_of(model):
             if n.split(".")[-1] in ARM_LEAVES}
 
 
+#: arguments that may differ between a checkpoint and the run resuming it
+RESUME_FREE = ("out", "ckpt", "ckpt_every", "resume", "device", "steps")
+
+
+def fingerprint(args, inst):
+    cfg = {k: v for k, v in vars(args).items() if k not in RESUME_FREE}
+    return json.dumps(dict(cfg=cfg, inst=inst), sort_keys=True, default=str)
+
+
+def save_checkpoint(path, state):
+    """Atomic: write next to the target, then rename over it."""
+    tmp = path + ".tmp"
+    torch.save(state, tmp)
+    os.replace(tmp, path)
+
+
+def update_step(model, opt, batch, clip):
+    """One update. Returns the total grad norm (a 0-dim tensor); a
+    non-finite norm means the step was NOT applied."""
+    loss, _ = loss_of(model, batch)
+    opt.zero_grad(set_to_none=True)
+    loss.backward()
+    gnorm = torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
+    ok = bool(torch.isfinite(gnorm))
+    if ok:
+        opt.step()
+        model.project_()                      # leaves are stored directly
+    return gnorm, ok
+
+
 def run(args):
     set_fp32()
     dev = torch.device(args.device)
@@ -134,45 +172,82 @@ def run(args):
         m = build(arm, vocab, seed=args.seed, writer_cfg=wcfg,
                   **model_kwargs(args)).to(dev)
         models[lab] = m
-        opts[lab] = torch.optim.AdamW(m.parameters(), lr=lr,
-                                      weight_decay=args.weight_decay)
+        opts[lab] = make_optimizer(m, lr, args.weight_decay)
 
     curves = {a: [] for a in arms}
+    failed = {}                   # label -> {step, grad_norm}: no further updates
+    start, wall_before, segments = 1, 0.0, []
+    ckpt = args.ckpt or (os.path.join(os.path.dirname(args.out), "ckpt.pt")
+                         if args.out else "")
+    fp = fingerprint(args, inst)
+    if ckpt:
+        os.makedirs(os.path.dirname(os.path.abspath(ckpt)), exist_ok=True)
+    if args.resume and ckpt and os.path.exists(ckpt):
+        st = torch.load(ckpt, map_location=dev, weights_only=False)
+        if st["fingerprint"] != fp:
+            raise SystemExit(f"refusing to resume from {ckpt}: configuration differs")
+        for a in arms:
+            models[a].load_state_dict(st["models"][a])
+            opts[a].load_state_dict(st["opts"][a])
+        gen.set_state(st["gen"])
+        curves, unused, failed = st["curves"], st["unused"], st["failed"]
+        start, wall_before = st["step"] + 1, st["wall_seconds"]
+        segments = st["segments"]
+        print(f"resumed from {ckpt} at step {st['step']} "
+              f"(repo {st['repo_sha'][:10]})", flush=True)
+    segments = segments + [dict(start_step=start, repo_sha=git_sha(REPO))]
+
     t0 = time.time()
-    for step in range(1, args.steps + 1):
+    for step in range(start, args.steps + 1):
         b = to_dev(make_batch(args.bsz, **task, generator=gen), dev)
         for a in arms:                            # ONE batch, all arms see it
-            loss, _ = loss_of(models[a], b)
-            opts[a].zero_grad(set_to_none=True)
-            loss.backward()
+            if a in failed:
+                continue
+            gnorm, ok = update_step(models[a], opts[a], b, args.clip)
             if step == 1:
                 unused[a] = unused_parameters(models[a])
-            torch.nn.utils.clip_grad_norm_(models[a].parameters(), args.clip)
-            opts[a].step()
-            models[a].project_()                  # leaves are stored directly
+            if not ok:
+                failed[a] = dict(step=step, grad_norm=float(gnorm))
+                print(f"[{step:5d}] {a} FAILED: non-finite gradient norm; "
+                      "no further updates for this arm", flush=True)
         if step % args.eval_every == 0 or step == args.steps:
             for a in arms:
                 acc = evaluate(models[a], eval_batches)
                 acc["step"] = step
+                inertia = models[a].inertia()
+                if inertia:
+                    acc["inertia"] = inertia
                 curves[a].append(acc)
             line = "  ".join(f"{a}:{curves[a][-1]['rev_lag_le8']:5.1f}"
                              for a in arms)
             n8 = curves[arms[0]][-1]["n_rev_lag_le8"]
-            print(f"[{step:5d}] {time.time()-t0:7.1f}s  lag<=8 (n={n8})  {line}",
-                  flush=True)
-            if args.spec:
-                prim = "  ".join(f"{a}:{curves[a][-1]['primary']:5.1f}"
-                                 for a in arms)
-                print(f"        primary  {prim}", flush=True)
+            print(f"[{step:5d}] {wall_before + time.time()-t0:7.1f}s  "
+                  f"lag<=8 (n={n8})  {line}", flush=True)
+            prim = "  ".join(f"{a}:{curves[a][-1]['primary']:5.1f}"
+                             for a in arms)
+            print(f"        primary  {prim}", flush=True)
             for a in arms:
                 lv = {n.split(".")[-1]: p.detach()
                       for n, p in models[a].named_parameters()
                       if n.split(".")[-1] in ARM_LEAVES}
                 if lv:
                     txt = "  ".join(
-                        f"{n}={v.min().item():.3f}..{v.max().item():.3f}"
+                        f"{n}={v.min().item():.3g}..{v.max().item():.3g}"
                         for n, v in sorted(lv.items()))
                     print(f"        {a:>12}  {txt}", flush=True)
+                for lay, c in curves[a][-1].get("inertia", {}).items():
+                    print(f"        {a:>12}  {lay} d={min(c['d']):.3g}..{max(c['d']):.3g}"
+                          f"  A-d={min(c['A_minus_d']):.3g}..{max(c['A_minus_d']):.3g}",
+                          flush=True)
+        if ckpt and args.ckpt_every and (step % args.ckpt_every == 0
+                                         or step == args.steps):
+            save_checkpoint(ckpt, dict(
+                fingerprint=fp, step=step, repo_sha=git_sha(REPO),
+                models={a: models[a].state_dict() for a in arms},
+                opts={a: opts[a].state_dict() for a in arms},
+                gen=gen.get_state(), curves=curves, unused=unused,
+                failed=failed, segments=segments,
+                wall_seconds=wall_before + time.time() - t0))
 
     heldout = {}
     if args.heldout:
@@ -190,22 +265,23 @@ def run(args):
 
     out = dict(
         provenance=dict(
-            repo_sha=git_sha(os.path.dirname(os.path.dirname(
-                os.path.abspath(__file__)))),
+            repo_sha=git_sha(REPO),
             mixer_version=MIXER_VERSION, torch=torch.__version__,
             device=str(dev),
             gpu=(torch.cuda.get_device_name(dev) if dev.type == "cuda" else None),
             dtype="float32", autocast=False,
             tf32_matmul=torch.backends.cuda.matmul.allow_tf32,
-            tf32_cudnn=torch.backends.cudnn.allow_tf32),
+            tf32_cudnn=torch.backends.cudnn.allow_tf32,
+            segments=segments),
         config={k: v for k, v in vars(args).items()},
         instances=[dict(label=lab, arm=arm, lr=lr, writer=w)
                    for lab, arm, lr, w in inst],
-        unused_parameters=unused, heldout=heldout,
+        unused_parameters=unused, failed=failed, heldout=heldout,
         vocab=vocab, arms=arms, curves=curves,
         final={a: curves[a][-1] for a in arms},
         learned={a: leaves_of(models[a]) for a in arms},
-        wall_seconds=time.time() - t0)
+        inertia={a: models[a].inertia() for a in arms if models[a].inertia()},
+        wall_seconds=wall_before + time.time() - t0)
     if args.out:
         os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
         with open(args.out, "w") as fh:
@@ -241,6 +317,12 @@ def parser():
     p.add_argument("--device",
                    default="cuda" if torch.cuda.is_available() else "cpu")
     p.add_argument("--out", default="")
+    p.add_argument("--ckpt", default="",
+                   help="checkpoint path (default: ckpt.pt next to --out)")
+    p.add_argument("--ckpt-every", type=int, default=0,
+                   help="checkpoint every N steps (0: never)")
+    p.add_argument("--resume", action="store_true",
+                   help="continue from the checkpoint if it exists")
     return p
 
 

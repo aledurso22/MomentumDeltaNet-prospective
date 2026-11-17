@@ -67,7 +67,8 @@ def mixer_forward_ref(m, h, P):
              eta=eta)
     leaves = {}
     for name, key in (("fil_M", "mass"), ("fil_gamma", "gamma"),
-                      ("fil_T", "response"), ("nu", "nu")):
+                      ("fil_T", "response"), ("nu", "nu"),
+                      ("inertia_A", "A"), ("inertia_r", "r")):
         if name in P:
             leaves[key] = P[name]
     o = reference_recurrence(m.arm, f, leaves, getattr(m, "writer_cfg", None))

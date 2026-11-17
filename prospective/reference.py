@@ -9,6 +9,7 @@ recurrence, then run the declared rule from `rules.py`.
 import torch
 
 from .coefficients import H_TOKEN
+from .projection import PROJECTION_ARMS, run_projection
 from .rules import FILTER_ARMS, recurrent_ref
 from .writers import WRITER_ARMS, run_writer
 
@@ -34,6 +35,11 @@ def reference_recurrence(arm, f, leaves, writer_cfg=None):
         q, k, v = (x if x.dtype == torch.float64 else x.to(torch.float32)
                    for x in (q, k, f["v"]))
         return run_writer(arm, q, k, v, writer_cfg, scale=k.shape[-1] ** -0.5)
+    if arm in PROJECTION_ARMS:
+        # same inputs as the writers: normalised unscaled k, no MDN gates
+        q, k, v = (x if x.dtype == torch.float64 else x.to(torch.float32)
+                   for x in (q, k, f["v"]))
+        return run_projection(arm, q, k, v, leaves, scale=k.shape[-1] ** -0.5)
     p = (k * f["log_alpha"].exp().unsqueeze(-1)).to(q.dtype)
     extra = dict(leaves)
     if arm in FILTER_ARMS:

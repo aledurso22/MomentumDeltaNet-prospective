@@ -9,12 +9,17 @@
 #
 #   SEEDS="501 502 503 504" bash prospective/run_wave.sh -- <extra train.py flags>
 #
+# Resumable: with RUN_TAG set, each seed writes to $OUT_ROOT/$RUN_TAG-seed<s>
+# (a stable directory), --resume is passed, and train.log is appended to, so
+# resubmitting the same command continues from each seed's checkpoint.
+# STEPS, when set, is passed as --steps (flags after -- override it).
+#
 # v2 writes to mdn-bridge-runs-v2 so v1 (reduced-mixer) results stay separate;
 # train.py defaults ARE the production config, so no task flags are needed.
 set -euo pipefail
 
 SEEDS="${SEEDS:-501 502 503}"
-STEPS="${STEPS:-4000}"
+STEPS="${STEPS:-}"
 OUT_ROOT="${OUT_ROOT:-$HOME/mdn-bridge-runs-v2}"
 [ "${1:-}" = "--" ] && shift
 
@@ -39,7 +44,9 @@ if [ "${#SEED_ARR[@]}" -gt "${#TOKENS[@]}" ]; then
   exit 1
 fi
 
-STAMP="$(date +%Y%m%d-%H%M%S)"
+STAMP="${RUN_TAG:-$(date +%Y%m%d-%H%M%S)}"
+RESUME=""
+if [ -n "${RUN_TAG:-}" ]; then RESUME="--resume"; fi
 echo "commit : $HEAD_SHA"
 echo "seeds  : ${SEED_ARR[*]}"
 echo "tokens : ${TOKENS[*]}"
@@ -54,8 +61,8 @@ for i in "${!SEED_ARR[@]}"; do
   mkdir -p "$run_dir"
   echo "launching seed $seed on gpu token $token -> $run_dir"
   CUDA_VISIBLE_DEVICES="$token" \
-    python -u -m prospective.train --seed "$seed" --steps "$STEPS" \
-      --out "$run_dir/results.json" "$@" > "$run_dir/train.log" 2>&1 &
+    python -u -m prospective.train --seed "$seed" ${STEPS:+--steps "$STEPS"} \
+      --out "$run_dir/results.json" ${RESUME:+"$RESUME"} "$@" >> "$run_dir/train.log" 2>&1 &
   pids+=($!)
 done
 

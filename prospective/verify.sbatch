@@ -8,15 +8,19 @@
 #SBATCH --output=/Users/durso/mdn-bridge-verify/slurm-%x-%j.out
 #
 # VERIFICATION ONLY: CPU tests, GPU integration tests (both Triton precision
-# modes), profiling. It never starts a training run.
+# modes), profiling of the four-arm pilot configuration. It never starts a
+# training run.
 #
-#   EXPECTED_COMMIT=<sha> sbatch --nodelist=<rtx4090-node> prospective/verify.sbatch
+#   EXPECTED_COMMIT=<sha> sbatch --nodelist=pgi15-gpu5 prospective/verify.sbatch
+#
+# Accepted GPUs: RTX 3090 or RTX 4090 (ALLOWED_GPUS in verify_gpu.sh). The
+# profile is only valid for the GPU model it ran on: profile on the model the
+# pilot will use. Inside an existing interactive allocation, run
+# verify_gpu.sh directly instead (README / v4 report).
 #
 # Same conventions as seed.sbatch (partition pgi15, cpu=10, mem=50G, the
-# /Local/durso checkout and venv); the node is chosen on the command line
-# because the 4090 node is not the 3090 node pgi15-gpu5. The job refuses to
-# run on any GPU that is not an RTX 4090, and on any commit but the expected
-# one. Artefacts go to the SHARED home, so they can be fetched from the head
+# /Local/durso checkout and venv); the node is chosen on the command line.
+# The job refuses any commit but the expected one. Artefacts go to the SHARED home, so they can be fetched from the head
 # node without logging into the GPU node.
 set -euo pipefail
 
@@ -34,10 +38,7 @@ if [ "$HEAD_SHA" != "$EXPECTED_COMMIT" ]; then
   echo "refusing: HEAD is $HEAD_SHA, expected $EXPECTED_COMMIT" >&2; exit 2
 fi
 GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0)"
-case "$GPU_NAME" in
-  *4090*) ;;
-  *) echo "refusing: GPU is '$GPU_NAME', this job is for an RTX 4090" >&2; exit 2 ;;
-esac
+# the accepted models are checked (and the hardware recorded) by verify_gpu.sh
 
 export OUT="/Users/durso/mdn-bridge-verify/${HEAD_SHA:0:10}-${SLURM_JOB_ID}"
 echo "=== job $SLURM_JOB_ID on $(hostname), $GPU_NAME"

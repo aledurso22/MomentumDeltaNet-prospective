@@ -1,5 +1,10 @@
 # Part 2, v3 — Joint memory–motion writer: implementation, checks, protocol
 
+> **SUPERSEDED (2026-11-17)** by the v4 training pilot,
+> [`v4_geometry_pilot.md`](v4_geometry_pilot.md). This plan is not launched.
+> Its implementation (`writers.py`, `experiment_v3.py`, `specs/v3/`) and
+> this report are kept unchanged for reference.
+
 **Question.** Can a fast memory that estimates both its current contents and
 their ongoing change, with separate corrections derived from accumulated
 information, improve fast selective revision without damaging untouched

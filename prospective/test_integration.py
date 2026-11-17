@@ -250,7 +250,8 @@ def test_official_chunk_layer_vs_fp64(T):
 
 
 def test_reference_layer_vs_fp64_every_arm():
-    """All nine arms, including the three v3 writers."""
+    """Every arm: v2 rules, v3 writers, v4 pilot projection writers (the
+    learned-inertia arm at its declared initial A, r)."""
     for arm in ALL_ARMS:
         m = layer(arm, "reference")
         with torch.no_grad():
@@ -357,6 +358,8 @@ def _nontrivial_leaves(m):
                 x.fil_T.fill_(1.5)
             if hasattr(x, "nu"):
                 x.nu.fill_(0.6)
+            if hasattr(x, "inertia_A"):
+                x.inertia_A.fill_(0.3); x.inertia_r.fill_(0.4)
 
 
 @pytest.mark.parametrize("arm", ALL_ARMS)
@@ -433,3 +436,68 @@ def test_tss_leaves_stay_pinned_at_zero():
     assert torch.equal(mix.fil_M, torch.zeros_like(mix.fil_M))
     assert torch.equal(mix.fil_gamma, torch.zeros_like(mix.fil_gamma))
     assert (mix.fil_T > 0.5).all()
+
+
+# ------------------------------------------------- v4 pilot: projection arms
+PILOT_MOTION = "geometric_motion_learned"
+
+
+def test_pilot_motion_arm_vs_fp64_at_interior_coefficients():
+    m = layer(PILOT_MOTION, "reference")
+    with torch.no_grad():
+        m.inertia_A.copy_(torch.tensor([0.3, 0.05, 0.9, 0.003125]))
+        m.inertia_r.copy_(torch.tensor([0.4, 0.0, 0.7, 0.5]))
+    record("layer reference FP32 vs FP64, arm=geometric_motion_learned "
+           "(interior A, r), T=52", layer_errors(m, 52, 78), graded=True)
+
+
+@pytest.mark.parametrize("A,r", [(0.0, 0.5), (0.3, 1.0)])
+def test_pilot_no_motion_boundaries_bitwise_on_gpu(A, r):
+    g, mo = layer("geometric_projection"), layer(PILOT_MOTION)
+    with torch.no_grad():
+        mo.inertia_A.fill_(A); mo.inertia_r.fill_(r)
+        h = hidden(2, 52, seed=12)
+        assert torch.equal(g(h)[0], mo(h)[0])
+
+
+def test_pilot_zero_keys_stay_finite_on_gpu():
+    for arm in ("euclidean_projection", "geometric_projection", PILOT_MOTION):
+        m = layer(arm)
+        with torch.no_grad():
+            m.k_proj.weight.zero_()
+        h = hidden(2, 52, seed=13).requires_grad_(True)
+        o = m(h)[0]
+        o.sum().backward()
+        assert torch.isfinite(o).all() and torch.isfinite(h.grad).all(), arm
+
+
+def test_pilot_spec_trains_checkpoints_and_resumes_on_gpu(tmp_path):
+    """A few updates of the exact pilot spec (tiny eval set), checkpoint,
+    resume. Bitwise resume is proven on CPU (test_train_cpu.py); here the
+    batch stream must be identical and the parameter differences between an
+    uninterrupted and a resumed run are RECORDED (GPU kernels need not be
+    run-to-run deterministic)."""
+    from prospective import experiment_pilot as P
+    from prospective.train import parser, run
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    base = P.flags() + ["--eval-batches", "2", "--eval-every", "2",
+                        "--ckpt-every", "2", "--device", "cuda", "--seed", "1"]
+    spec_i = base.index("--spec") + 1
+    base[spec_i] = os.path.join(root, base[spec_i])
+
+    def go(d, steps, *extra):
+        return run(parser().parse_args(base + ["--steps", str(steps), "--out",
+                                               str(d / "results.json"), *extra]))
+    a = go(tmp_path / "a", 4)
+    go(tmp_path / "b", 2)
+    go(tmp_path / "b", 4, "--resume")
+    assert a["arms"] == list(P.ARMS) and not a["failed"]
+    assert [x["step"] for x in a["curves"]["native"]] == [2, 4]
+    ca = torch.load(tmp_path / "a" / "ckpt.pt", weights_only=False)
+    cb = torch.load(tmp_path / "b" / "ckpt.pt", weights_only=False)
+    assert torch.equal(ca["gen"], cb["gen"])
+    diffs = {arm: max((t - cb["models"][arm][n]).abs().max().item()
+                      for n, t in sd.items()) for arm, sd in ca["models"].items()}
+    REPORT["comparisons"]["pilot resume vs uninterrupted, max |param diff|"] = diffs
+    print("\n  resume vs uninterrupted, max |param diff|:", diffs)
+    assert "inertia" in a and set(a["inertia"]) == {PILOT_MOTION}

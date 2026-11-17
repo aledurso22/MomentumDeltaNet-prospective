@@ -1,12 +1,14 @@
 """Measure, on one GPU, what one seed of the lockstep wave costs.
 
-Builds the models exactly as `train.py` does (default: all nine arms; same process, all resident,
-FP32, reference backend, production task at batch 16), warms up, then for each
-arm separately measures synchronised wall time of
+Builds the models exactly as `train.py` does (the arms must be selected
+explicitly with --spec or --arms; there is no default set; same process, all
+resident, FP32, reference backend, production task at batch 16), warms up,
+then for each arm separately measures synchronised wall time of
 
     forward   (model + loss)
     backward
-    update    (grad clip + AdamW step + leaf projection)
+    update    (grad clip + finite check + AdamW step + leaf projection),
+              the same `update_step` path train.py uses
 
 and the peak allocated / reserved GPU memory during that arm's steps. Then
 times one full evaluation (the fixed 24 x 32 eval set) per arm and the CPU
@@ -15,25 +17,27 @@ batch generation. The wave estimate is assembled from these measurements:
     per_seed = steps * (batch_gen + sum_arms(fwd + bwd + upd))
              + n_evals * sum_arms(eval)
 
-Nothing is assumed from earlier hardware.
+plus the measured checkpoint write (one per --ckpt-every steps). Nothing is
+assumed from earlier hardware. `--budget-minutes` only labels whether the
+measured estimate fits; it changes nothing.
 
-    python -m prospective.profile_gpu --out profile_4090.json
+    python -m prospective.profile_gpu --spec prospective/specs/pilot/pilot.json \
+        --steps 2000 --eval-every 100 --ckpt-every 200 --out profile.json
 """
 
 import json
+import os
 import statistics as st
+import tempfile
 import time
 
 import torch
 
-from .experiment_v3 import ARMS as V3_ARMS
-from .mixer import ALL_ARMS
-from .model import build
-from .rules import ARMS as V2_ARMS
+from .model import build, make_optimizer
+from .projection import state_numbers
 from .task import make_batch
 from .train import (evaluate, git_sha, instances, loss_of, model_kwargs,
-                    parser, set_fp32, task_kwargs, to_dev)
-from .writers import state_numbers
+                    parser, save_checkpoint, set_fp32, task_kwargs, to_dev)
 
 
 def sync_time(fn, dev):
@@ -49,7 +53,11 @@ def main():
     p.add_argument("--warmup", type=int, default=20)
     p.add_argument("--measure", type=int, default=50)
     p.add_argument("--eval-reps", type=int, default=3)
+    p.add_argument("--budget-minutes", type=float, default=60.0)
     args = p.parse_args()
+    if not (args.spec or args.arms):
+        raise SystemExit("select the arms explicitly (--spec or --arms); "
+                         "there is no default arm set")
     set_fp32()
     dev = torch.device(args.device)
     assert dev.type == "cuda", "profile on the GPU the wave will use"
@@ -62,8 +70,6 @@ def main():
     eval_batches = [to_dev(make_batch(args.eval_bsz, **task,
                                       generator=eval_gen), dev)
                     for _ in range(args.eval_batches)]
-    if not (args.spec or args.arms):
-        args.arms = list(ALL_ARMS)          # all nine: v2 six + three writers
     inst = instances(args)
     arms = [lab for lab, _, _, _ in inst]
     arm_of = {lab: arm for lab, arm, _, _ in inst}
@@ -71,8 +77,7 @@ def main():
     for lab, arm, lr, wcfg in inst:
         models[lab] = build(arm, vocab, seed=args.seed, writer_cfg=wcfg,
                             **model_kwargs(args)).to(dev)
-        opts[lab] = torch.optim.AdamW(models[lab].parameters(), lr=lr,
-                                      weight_decay=args.weight_decay)
+        opts[lab] = make_optimizer(models[lab], lr, args.weight_decay)
     n_params = {a: sum(x.numel() for x in m.parameters())
                 for a, m in models.items()}
 
@@ -82,10 +87,11 @@ def main():
         o.zero_grad(set_to_none=True)
         tb, _ = sync_time(loss.backward, dev)
 
-        def upd():
-            torch.nn.utils.clip_grad_norm_(m.parameters(), args.clip)
-            o.step()
-            m.project_()
+        def upd():           # as train.update_step, after its backward
+            gn = torch.nn.utils.clip_grad_norm_(m.parameters(), args.clip)
+            if bool(torch.isfinite(gn)):
+                o.step()
+                m.project_()
         tu, _ = sync_time(upd, dev)
         if rec is not None:
             rec["fwd"].append(tf); rec["bwd"].append(tb); rec["upd"].append(tu)
@@ -130,22 +136,36 @@ def main():
             * state_numbers(arm_of[a], args.head_dim,
                             int(args.head_dim * args.expand_v)))
 
+    # one checkpoint write of everything train.py saves (models + optimisers)
+    with tempfile.TemporaryDirectory() as td:
+        path = os.path.join(td, "ckpt.pt")
+        tck = []
+        for _ in range(3):
+            t = time.perf_counter()
+            save_checkpoint(path, dict(
+                models={a: models[a].state_dict() for a in arms},
+                opts={a: opts[a].state_dict() for a in arms}))
+            tck.append(time.perf_counter() - t)
+        ckpt_mib = os.path.getsize(path) / MiB
+    ckpt_s = st.median(tck)
+
     gen_ms = 1e3 * st.median(tgen)
     n_evals = args.steps // args.eval_every + (args.steps % args.eval_every != 0)
-
-    def per_seed(labels):
-        labels = [x for x in labels if x in rows]
-        step_s = sum(rows[x]["step_ms"] for x in labels) / 1e3
-        ev_s = sum(rows[x]["eval_s"] for x in labels)
-        return labels, step_s, ev_s, args.steps * (gen_ms / 1e3 + step_s) + n_evals * ev_s
-
-    _, sum_step_s, sum_eval_s, per_seed_s = per_seed(arms)
-    estimates = {}
-    for name, labels in (("all_profiled", arms), ("v2_six", V2_ARMS), ("v3_six", V3_ARMS)):
-        used, a_, b_, c_ = per_seed(labels)
-        if len(used) == len(labels):
-            estimates[name] = dict(arms=used, lockstep_step_ms=1e3 * a_ + gen_ms,
-                                   eval_round_s=b_, per_seed_minutes=c_ / 60)
+    n_ckpt = (args.steps // args.ckpt_every + (args.steps % args.ckpt_every != 0)
+              if args.ckpt_every else 0)
+    sum_step_s = sum(r["step_ms"] for r in rows.values()) / 1e3
+    sum_eval_s = sum(r["eval_s"] for r in rows.values())
+    per_seed_s = (args.steps * (gen_ms / 1e3 + sum_step_s) + n_evals * sum_eval_s
+                  + n_ckpt * ckpt_s)
+    fits = per_seed_s / 60 <= args.budget_minutes
+    estimates = {"profiled": dict(
+        arms=arms, lockstep_step_ms=1e3 * sum_step_s + gen_ms,
+        eval_round_s=sum_eval_s, n_evals=n_evals, checkpoint_s=ckpt_s,
+        n_checkpoints=n_ckpt, per_seed_minutes=per_seed_s / 60,
+        budget_minutes=args.budget_minutes, fits_budget=fits,
+        steps_in_budget=int(max(0.0, 60 * args.budget_minutes
+                                - n_evals * sum_eval_s - n_ckpt * ckpt_s)
+                            // (gen_ms / 1e3 + sum_step_s)))}
 
     w = max(len(a) for a in arms)
     print(f"\n{torch.cuda.get_device_name(dev)}, bsz {args.bsz}, seq "
@@ -163,18 +183,22 @@ def main():
     print(f"all {len(arms)} profiled models + AdamW state: {resident / MiB:.0f} MiB resident")
     print(f"one lockstep step     {1e3 * sum_step_s + gen_ms:.0f} ms")
     print(f"one eval round        {sum_eval_s:.1f} s  x {n_evals}")
-    for name, e in estimates.items():
-        print(f"=> {name:12s} one seed, {args.steps} steps, lockstep: "
-              f"{e['per_seed_minutes']:.1f} min on this GPU")
-    print("(estimates assume the lockstep process holds exactly those arms; "
-          "one seed per GPU, seeds in parallel)")
+    print(f"checkpoint write      {ckpt_s:.2f} s ({ckpt_mib:.1f} MiB) x {n_ckpt}")
+    e = estimates["profiled"]
+    print(f"=> one seed, {args.steps} steps, {len(arms)} arms in lockstep: "
+          f"{e['per_seed_minutes']:.1f} min on this GPU; budget "
+          f"{args.budget_minutes:.0f} min -> {'FITS' if fits else 'DOES NOT FIT'}"
+          f" (about {e['steps_in_budget']} steps would)")
+    print("(one seed per GPU, seeds in parallel; assumes no CPU contention "
+          "between the co-resident processes)")
 
     out = dict(gpu=torch.cuda.get_device_name(dev), torch=torch.__version__,
                repo_sha=git_sha("."), config=vars(args), arms=rows,
                batch_gen_ms=gen_ms, resident_mib=resident / MiB,
                lockstep_step_ms=1e3 * sum_step_s + gen_ms,
                eval_round_s=sum_eval_s, n_evals=n_evals,
-               per_seed_minutes=per_seed_s / 60, estimates=estimates)
+               per_seed_minutes=per_seed_s / 60, checkpoint_mib=ckpt_mib,
+               estimates=estimates)
     if args.out:
         with open(args.out, "w") as fh:
             json.dump(out, fh, indent=1)

@@ -1,5 +1,8 @@
 """v3: joint memory-motion writer vs controls. Protocol, specs and analysis.
 
+SUPERSEDED by `experiment_pilot.py` (v4 geometry/inertia pilot). Kept
+unchanged for reference; not launched.
+
 Question: can a fast memory that estimates both its current contents and
 their ongoing change, with separate corrections derived from accumulated
 information, improve fast selective revision without damaging untouched

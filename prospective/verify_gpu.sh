@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 # The gate before any wave: unit tests, integration in both Triton precision
-# modes, then profiling. NEVER launches training.
+# modes, then profiling of the v4 PILOT configuration only (its four arms,
+# 2,000 steps, its eval and checkpoint cadence, all taken from
+# `experiment_pilot flags`). No other arm set is profiled. NEVER launches
+# training.
 #
 #   OUT=<dir> CUDA_VISIBLE_DEVICES=0 bash prospective/verify_gpu.sh
 #
@@ -18,6 +21,21 @@ fi
 OUT="${OUT:-$HOME/mdn-bridge-verify/$(git rev-parse --short=10 HEAD)-$(date +%Y%m%d-%H%M%S)}"
 mkdir -p "$OUT"
 export VERIFY_OUT="$OUT"
+# accepted GPU models (substrings of the nvidia-smi name); the numerical
+# checks and tolerances do not depend on which one is detected
+ALLOWED_GPUS="${ALLOWED_GPUS:-RTX 3090,RTX 4090}"
+GPU_NAME="$(nvidia-smi --query-gpu=name --format=csv,noheader -i 0)"
+ok=0; IFS=',' read -r -a _allowed <<< "$ALLOWED_GPUS"
+for g in "${_allowed[@]}"; do case "$GPU_NAME" in *"$g"*) ok=1 ;; esac; done
+if [ "$ok" != 1 ]; then
+  echo "refusing: GPU '$GPU_NAME' is not one of: $ALLOWED_GPUS" >&2; exit 2
+fi
+nvidia-smi --query-gpu=index,name,uuid,driver_version,memory.total,pci.bus_id \
+  --format=csv > "$OUT/hardware.csv"
+{ echo "detected_gpu_0: $GPU_NAME"; echo "CUDA_VISIBLE_DEVICES: ${CUDA_VISIBLE_DEVICES:-unset}"
+  echo "SLURM_JOB_ID: ${SLURM_JOB_ID:-none}  node: $(hostname)"
+  lscpu | grep -E "Model name|^CPU\(s\)" || true; } > "$OUT/hardware.txt"
+cat "$OUT/hardware.txt"
 export PYTHONPATH="$REPO/flash-linear-attention${PYTHONPATH:+:$PYTHONPATH}"
 CACHE_ROOT="${TMPDIR:-/tmp}/triton-cache-$$"
 
@@ -49,14 +67,19 @@ stage() {   # stage <name> <command...>; never aborts the script
 }
 : > "$OUT/status.txt"
 
+read -r -a PILOT_FLAGS <<< "$(python -m prospective.experiment_pilot flags)"
+echo "pilot flags: ${PILOT_FLAGS[*]}" | tee -a "$OUT/env.txt"
+
 stage unit python -m pytest -q -p no:cacheprovider prospective/test_rules.py \
   prospective/test_writers.py prospective/test_experiment_v3.py prospective/test_model_cpu.py \
-  prospective/test_coefficients.py prospective/test_task.py
+  prospective/test_coefficients.py prospective/test_task.py prospective/test_projection.py \
+  prospective/test_experiment_pilot.py prospective/test_train_cpu.py
 stage integration_default env TRITON_CACHE_DIR="$CACHE_ROOT/default" \
   python -m pytest -s -q -p no:cacheprovider prospective/test_integration.py
 stage integration_ieee env TRITON_CACHE_DIR="$CACHE_ROOT/ieee" TRITON_F32_DEFAULT=ieee \
   python -m pytest -s -q -p no:cacheprovider prospective/test_integration.py
-stage profile python -u -m prospective.profile_gpu --out "$OUT/profile.json"
+stage profile python -u -m prospective.profile_gpu "${PILOT_FLAGS[@]}" \
+  --budget-minutes 60 --out "$OUT/profile.json"
 rm -rf "$CACHE_ROOT"
 echo "artefacts in $OUT"
 cat "$OUT/status.txt"

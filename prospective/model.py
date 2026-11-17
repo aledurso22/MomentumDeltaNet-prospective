@@ -16,6 +16,7 @@ import torch.nn as nn
 
 from .coefficients import H_TOKEN, project_leaves
 from .mixer import ALL_ARMS, QHM_DOMAIN, ProspectiveMDN
+from .projection import INERTIA_DOMAIN, INERTIA_LEAVES, coefficients
 
 #: production model, as specified for the v2 rerun
 MODEL_DEFAULTS = dict(d_model=128, n_heads=4, head_dim=32, expand_v=2,
@@ -80,9 +81,40 @@ class Model(nn.Module):
                                freeze_mass_gamma=m.arm != "generalized")
             if hasattr(m, "nu"):
                 m.nu.data.clamp_(*QHM_DOMAIN)
+            if hasattr(m, "inertia_A"):
+                m.inertia_A.data.clamp_(*INERTIA_DOMAIN)
+                m.inertia_r.data.clamp_(*INERTIA_DOMAIN)
+
+    def inertia(self):
+        """Learned inertial coefficients per layer: A, r, d = r A, A - d (one
+        entry per head). Empty for arms without them."""
+        return {f"layer{i}": coefficients(blk.mix.inertia_A, blk.mix.inertia_r)
+                for i, blk in enumerate(self.blocks)
+                if hasattr(blk.mix, "inertia_A")}
 
 
-ARM_LEAVES = ("fil_M", "fil_gamma", "fil_T", "nu")
+ARM_LEAVES = ("fil_M", "fil_gamma", "fil_T", "nu") + INERTIA_LEAVES
+#: leaves excluded from weight decay (the pilot's inertial coefficients only;
+#: every other parameter keeps the existing uniform AdamW decay)
+NO_DECAY_LEAVES = INERTIA_LEAVES
+
+
+def param_groups(model, weight_decay):
+    """The existing AdamW configuration, with NO_DECAY_LEAVES moved to a
+    weight_decay = 0 group. Arms without such leaves get the single group
+    they always had."""
+    decay, no_decay = [], []
+    for n, p in model.named_parameters():
+        (no_decay if n.split(".")[-1] in NO_DECAY_LEAVES else decay).append(p)
+    groups = [dict(params=decay, weight_decay=weight_decay)]
+    if no_decay:
+        groups.append(dict(params=no_decay, weight_decay=0.0))
+    return groups
+
+
+def make_optimizer(model, lr, weight_decay):
+    return torch.optim.AdamW(param_groups(model, weight_decay), lr=lr,
+                             weight_decay=weight_decay)
 
 
 def build(arm, vocab, seed, **kw):
@@ -93,7 +125,8 @@ def build(arm, vocab, seed, **kw):
     return Model(arm, vocab, **kw)
 
 
-#: Optimizer note. The official layer marks A_log, Mu_log, dt_bias, mu_bias,
+#: Optimizer note (the pilot's inertial coefficients are the one exception,
+#: see NO_DECAY_LEAVES). The official layer marks A_log, Mu_log, dt_bias, mu_bias,
 #: log_factor and D_log `_no_weight_decay`, but the official trainer
 #: (flame/torchtitan `build_optimizers`) ignores that flag and applies one
 #: weight decay to every parameter. v1 did the same, so train.py keeps a plain

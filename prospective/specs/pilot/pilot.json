@@ -1,0 +1,18 @@
+[
+ {
+  "label": "native",
+  "arm": "native"
+ },
+ {
+  "label": "euclidean_projection",
+  "arm": "euclidean_projection"
+ },
+ {
+  "label": "geometric_projection",
+  "arm": "geometric_projection"
+ },
+ {
+  "label": "geometric_motion_learned",
+  "arm": "geometric_motion_learned"
+ }
+]
