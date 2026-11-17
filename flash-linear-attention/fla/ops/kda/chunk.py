@@ -6,7 +6,8 @@ import torch
 from fla.modules.l2norm import l2norm_bwd, l2norm_fwd
 from fla.ops.kda.chunk_delta_h import chunk_gated_delta_rule_bwd_dhu, chunk_gated_delta_rule_fwd_h
 from fla.ops.kda.chunk_o import chunk_bwd_dv_local
-from fla.ops.gla.chunk import chunk_gla_bwd_dA, chunk_gla_fwd_o_gk
+# fla.ops.gla is not shipped in this trimmed tree: imported where used, so
+# that `import fla` works and KDA fails only if it is actually called
 from fla.ops.kda.chunk_inter import chunk_kda_bwd_dqkwg
 from fla.ops.kda.chunk_intra import chunk_kda_bwd_intra, chunk_kda_fwd_intra
 from fla.ops.kda.wy_fast import prepare_wy_repr_bwd, recompute_w_u_fwd
@@ -56,6 +57,7 @@ def chunk_kda_fwd(
         cu_seqlens=cu_seqlens,
     )
 
+    from fla.ops.gla.chunk import chunk_gla_fwd_o_gk
     o = chunk_gla_fwd_o_gk(
         q=q,
         v=v_new,
@@ -126,6 +128,7 @@ def chunk_kda_bwd(
     )
 
     # dq dk in fp32
+    from fla.ops.gla.chunk import chunk_gla_bwd_dA
     dAqk = chunk_gla_bwd_dA(
         v=v_new,
         do=do,

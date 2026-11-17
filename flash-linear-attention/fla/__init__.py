@@ -6,7 +6,7 @@ from fla.layers import (
     GatedDeltaNet,
     MomentumDeltaNet,
     Mamba2,
-    KimiDeltaAhattention,
+    KimiDeltaAttention,
 )
 from fla.models import (
     CombaForCausalLM,

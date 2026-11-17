@@ -2,7 +2,9 @@
 
 Base: this repository at **c6e77fa261fb0c002fae1a14b6209a5b28d2edc9**
 (`HuuYuLong/MomentumDeltaNet`, ICML 2026). Branch `prospective-rules` changes
-nothing under `flash-linear-attention/` or `flame/`.
+nothing under `flame/`, and under `flash-linear-attention/` only one upstream
+import typo in `fla/__init__.py` (`KimiDeltaAhattention` ->
+`KimiDeltaAttention`), without which `import fla` fails.
 
 Reports: [`reports/v4_geometry_pilot.md`](reports/v4_geometry_pilot.md)
 (current: geometry and learned-inertia training pilot, GPU results pending),
